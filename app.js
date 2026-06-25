@@ -22,9 +22,9 @@ const state = {
   results: [],            // one entry per file after OCR
   tesseractWorker: null,
   template: {             // renaming template configured by user in Step 1
-    slots: [null, null, null],  // e.g. ['Name', 'FixedTemplate', 'ID']
-    separator: '_',
-    fixedText: '',
+    slots:      [null, null, null],  // e.g. ['Name', 'FixedTemplate', 'ID']
+    separator:  '_',
+    fixedTexts: ['', '', ''],        // independent text per slot
   },
   finalReport: [],
 };
@@ -128,13 +128,12 @@ function validateTemplate() {
 
 function updateStartBtn() {
   const btn   = document.getElementById('start-btn');
-  const ready = state.pdfFiles.length > 0 && validateTemplate();
+  // Both folder AND Name/ID file are now required
+  const ready = state.pdfFiles.length > 0 && state.students.length > 0 && validateTemplate();
   btn.disabled = !ready;
   if (ready) {
-    const fileCount = state.pdfFiles.length;
-    const refInfo   = state.students.length > 0 ? ` · ${state.students.length} reference entries` : ' · no reference file';
     btn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    Start OCR Processing (${fileCount} files${refInfo})`;
+    Start OCR Processing (${state.pdfFiles.length} files · ${state.students.length} roster entries)`;
   }
 }
 
@@ -600,18 +599,15 @@ function extractNameFromFilename(filename) {
 }
 
 function buildFilenameFromTemplate(parsed, student, filenameHint = '') {
-  const { slots, separator, fixedText } = state.template;
-  // Name priority: matched Excel name → OCR-extracted name → filename hint → UNKNOWN
-  // ID priority:   matched Excel ID   → OCR-extracted ID   → UNKNOWN
-  const parts = slots
-    .filter(s => s)
-    .map(slot => {
-      if (slot === 'Name')          return student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN';
-      if (slot === 'ID')            return student?.atsId  || parsed?.atsId  || 'UNKNOWN';
-      if (slot === 'FixedTemplate') return (fixedText || '').trim() || 'FIXED';
-      return '';
-    })
-    .filter(Boolean);
+  const { slots, separator, fixedTexts } = state.template;
+  const parts = [];
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    if (!slot) continue;
+    if (slot === 'Name')          parts.push(student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN');
+    else if (slot === 'ID')       parts.push(student?.atsId || parsed?.atsId || 'UNKNOWN');
+    else if (slot === 'FixedTemplate') parts.push((fixedTexts[i] || '').trim() || 'FIXED');
+  }
   if (parts.length === 0) return 'UNKNOWN.pdf';
   return parts.join(separator) + '.pdf';
 }
@@ -826,9 +822,9 @@ function matchStudent(ocrName, filenameHint, ocrId, students) {
   const merged = students.map(s => {
     const o = ocrScored.find(r => r.student === s);
     const f = fnScored.find(r => r.student === s);
-    const score = Math.max(o?.score || 0, f?.score || 0);
     const ocrScore = o?.score || 0;
     const fnScore  = f?.score || 0;
+    const score    = Math.max(ocrScore, fnScore);
     return { student: s, score, ocrScore, fnScore };
   }).sort((a, b) => b.score - a.score);
 
@@ -836,9 +832,21 @@ function matchStudent(ocrName, filenameHint, ocrId, students) {
   const second = merged[1];
   const gap    = second ? top.score - second.score : 1;
 
-  // ── Stage 1: Clear winner ──
-  if (top.score >= 0.5 && gap >= 0.2) {
+  // ── 3-way validation at 70%: OCR name + filename + roster all agree ──
+  // When BOTH OCR name and filename match the same roster entry at ≥70%,
+  // that is a high-confidence confirmed match regardless of gap.
+  if (top.ocrScore >= 0.7 && top.fnScore >= 0.7) {
+    return { status: 'matched', student: top.student, confidence: Math.min(top.ocrScore, top.fnScore), candidates: [] };
+  }
+
+  // ── Stage 1: Either source alone at ≥70% with clear gap ──
+  if (top.score >= 0.7 && gap >= 0.15) {
     return { status: 'matched', student: top.student, confidence: top.score, candidates: [] };
+  }
+
+  // ── Medium confidence: ≥50% with gap ──
+  if (top.score >= 0.5 && gap >= 0.2) {
+    return { status: 'low-confidence', student: top.student, confidence: top.score, candidates: merged.slice(0, 3) };
   }
 
   // ── Too low to work with ──
@@ -926,14 +934,16 @@ function buildResultsTable() {
   const noRef = state.students.length === 0;
 
   // ── Populate template banner ──
-  const { slots, separator, fixedText } = state.template;
-  const LABELS = { Name: 'Name', ID: 'ID', FixedTemplate: fixedText.trim() || 'Fixed Text' };
-  const activeSlots = slots.filter(Boolean);
+  const { slots, separator, fixedTexts } = state.template;
+  const LABELS = { Name: 'Name', ID: 'ID' };
   const templateDisplay = document.getElementById('review-template-display');
   if (templateDisplay) {
-    templateDisplay.textContent = activeSlots.length > 0
-      ? activeSlots.map(s => LABELS[s]).join(` ${separator} `) + '.pdf'
-      : '— no template set —';
+    const parts = slots.map((s, i) => {
+      if (!s) return null;
+      if (s === 'FixedTemplate') return fixedTexts[i] || `Template${i + 1}`;
+      return LABELS[s] || s;
+    }).filter(Boolean);
+    templateDisplay.textContent = parts.length > 0 ? parts.join(separator) + '.pdf' : '— no template set —';
   }
 
   // Show UNKNOWN hint if any filenames contain UNKNOWN and no reference file
@@ -1235,7 +1245,7 @@ function restart() {
   state.pdfFiles   = [];
   state.students   = [];
   state.results    = [];
-  state.template   = { slots: [null, null, null], separator: '_', fixedText: '' };
+  state.template   = { slots: [null, null, null], separator: '_', fixedTexts: ['', '', ''] };
   state.finalReport = [];
 
   ['zone-pdf', 'zone-excel'].forEach(id => {
@@ -1259,10 +1269,12 @@ function restart() {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
+  SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
   document.getElementById('sep-underscore')?.classList.add('active');
-  document.getElementById('sep-hyphen')?.classList.remove('active');
-  document.getElementById('fixed-text-input').value = '';
-  document.getElementById('fixed-text-row').classList.add('hidden');
+  [1, 2, 3].forEach(i => {
+    const el = document.getElementById(`fixed-text-${i}`);
+    if (el) { el.value = ''; el.classList.add('hidden'); }
+  });
   updatePreview();
 
   showStep(1);
@@ -1289,39 +1301,39 @@ window.addEventListener('unhandledrejection', e => console.error('app.js unhandl
 const SLOT_LABELS = { Name: 'Name', ID: 'ID', FixedTemplate: 'Fixed Text' };
 const EXAMPLE_VALUES = { Name: 'Aysha', ID: '571883', FixedTemplate: null };
 
+const SEP_IDS = ['sep-underscore', 'sep-hyphen', 'sep-space', 'sep-none'];
+const SEP_DISPLAY = { '_': '_', '-': '-', ' ': '·', '': '∅' };
+
 function updateSlotOptions() {
-  const used = state.template.slots.filter(Boolean);
+  const used = state.template.slots.filter(s => s && s !== 'FixedTemplate');
   ['slot-1', 'slot-2', 'slot-3'].forEach((id, idx) => {
     const sel = document.getElementById(id);
     if (!sel) return;
     const currentVal = state.template.slots[idx];
     Array.from(sel.options).forEach(opt => {
-      if (!opt.value) return; // keep "Not used"
+      if (!opt.value || opt.value === 'FixedTemplate') return;
       opt.disabled = used.includes(opt.value) && opt.value !== currentVal;
     });
     sel.classList.toggle('has-value', !!currentVal);
+    // Show/hide per-slot fixed text input
+    const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
+    if (fixedInput) fixedInput.classList.toggle('hidden', currentVal !== 'FixedTemplate');
   });
-}
-
-function updateFixedTextVisibility() {
-  const hasFixed = state.template.slots.includes('FixedTemplate');
-  document.getElementById('fixed-text-row').classList.toggle('hidden', !hasFixed);
 }
 
 function updatePreview() {
-  const { slots, separator, fixedText } = state.template;
-  const active = slots.filter(Boolean);
-  const previewFn  = document.getElementById('preview-filename');
-  const previewEx  = document.getElementById('preview-example');
-  const sepDisplays = ['sep-display-1', 'sep-display-2'];
+  const { slots, separator, fixedTexts } = state.template;
+  const previewFn   = document.getElementById('preview-filename');
+  const previewEx   = document.getElementById('preview-example');
+  const sepChar     = SEP_DISPLAY[separator] ?? separator;
 
-  // Update separator characters displayed between slots
-  sepDisplays.forEach(id => {
+  ['sep-display-1', 'sep-display-2'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = separator;
+    if (el) el.textContent = separator === '' ? '∅' : separator === ' ' ? '·' : separator;
   });
 
-  if (active.length === 0) {
+  const activeSlots = slots.map((s, i) => ({ s, i })).filter(({ s }) => s);
+  if (activeSlots.length === 0) {
     previewFn.textContent = '—';
     previewEx.textContent = 'Select at least one slot above';
     previewEx.style.color = '#ef4444';
@@ -1329,47 +1341,47 @@ function updatePreview() {
   }
 
   previewEx.style.color = '';
-  const parts = active.map(s => SLOT_LABELS[s] || s);
-  previewFn.textContent = parts.join(separator) + '.pdf';
-
-  const exParts = active.map(s => {
-    if (s === 'FixedTemplate') return (fixedText.trim() || 'FIXED');
-    return EXAMPLE_VALUES[s] || s;
-  });
+  const labelParts = activeSlots.map(({ s, i }) =>
+    s === 'FixedTemplate' ? (fixedTexts[i] || `Template${i + 1}`) : (SLOT_LABELS[s] || s)
+  );
+  const exParts = activeSlots.map(({ s, i }) =>
+    s === 'FixedTemplate' ? (fixedTexts[i].trim() || 'FIXED') : (EXAMPLE_VALUES[s] || s)
+  );
+  previewFn.textContent = labelParts.join(separator) + '.pdf';
   previewEx.textContent = 'e.g. ' + exParts.join(separator) + '.pdf';
 }
 
 function initTemplateUI() {
+  // Slot selects
   ['slot-1', 'slot-2', 'slot-3'].forEach((id, idx) => {
     const sel = document.getElementById(id);
     if (!sel) return;
     sel.addEventListener('change', () => {
       state.template.slots[idx] = sel.value || null;
       updateSlotOptions();
-      updateFixedTextVisibility();
       updatePreview();
       updateStartBtn();
     });
+    // Per-slot fixed text
+    const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
+    if (fixedInput) {
+      fixedInput.addEventListener('input', () => {
+        state.template.fixedTexts[idx] = fixedInput.value;
+        updatePreview();
+      });
+    }
   });
 
-  // Separator buttons
-  document.getElementById('sep-underscore').addEventListener('click', () => {
-    state.template.separator = '_';
-    document.getElementById('sep-underscore').classList.add('active');
-    document.getElementById('sep-hyphen').classList.remove('active');
-    updatePreview();
-  });
-  document.getElementById('sep-hyphen').addEventListener('click', () => {
-    state.template.separator = '-';
-    document.getElementById('sep-hyphen').classList.add('active');
-    document.getElementById('sep-underscore').classList.remove('active');
-    updatePreview();
-  });
-
-  // Fixed text input
-  document.getElementById('fixed-text-input').addEventListener('input', e => {
-    state.template.fixedText = e.target.value;
-    updatePreview();
+  // Separator buttons (underscore, hyphen, space, none)
+  SEP_IDS.forEach(btnId => {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      state.template.separator = btn.dataset.sep;
+      SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
+      btn.classList.add('active');
+      updatePreview();
+    });
   });
 
   updatePreview();
