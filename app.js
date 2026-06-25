@@ -407,10 +407,10 @@ async function ocrFirstPage(fileHandle) {
 // OCR TEXT PARSING
 // ─────────────────────────────────────────────────────────────
 
-// Labels that look like names but are actually form field labels — reject these
-const FORM_LABEL_RE = /^(course|ats|subject|unit|program|nqc|submission|assessment|milestone|outcome|performance|task|module|criteria|reference|date|signature|teacher|instructor|evaluator|mark|score|grade|result|total)/i;
-// Prefixes that make "Name" invalid (e.g. "Course Name", "Assessment Name")
-const BAD_NAME_PREFIX = /^(course|assessment|subject|unit|program|task|module|outcome|criteria|milestone)/i;
+// Strings that look like names but are actually form field labels — reject if candidate starts with these
+const FORM_LABEL_RE = /^(course|ats|subject|unit|program|nqc|submission|assessment|milestone|outcome|performance|task|module|criteria|reference|date|signature|teacher|instructor|evaluator|mark|score|grade|result|total|pc\b|gc\b|pc\s*#|gc\s*#|description|ladder|circuit|relay|normally|closed|pushbutton|safety|identify|determine|label|describe|explain|interpret|document|using|apply|with|for|the|and|or|by|of|in|to)/i;
+// Reject if the candidate is a sentence fragment (contains verb-like words)
+const BAD_NAME_PREFIX = /^(course|assessment|subject|unit|program|task|module|outcome|criteria|milestone|pc|gc|describe|identify|determine|label|explain|interpret|document)/i;
 
 /**
  * Scan OCR text for a label keyword and return the text that immediately
@@ -496,7 +496,13 @@ function parseOcrText(text) {
   ];
   for (const m of structMatches) {
     const candidate = m[1].trim().replace(/\s{2,}/g, ' ');
-    if (ALPHA_NAME_RE.test(candidate) && !FORM_LABEL_RE.test(candidate) && candidate.split(' ').length >= 2) {
+    const words     = candidate.split(/\s+/);
+    const allLong   = words.every(w => w.length >= 3);
+    const hasLong   = words.some(w => w.length >= 5);
+    if (ALPHA_NAME_RE.test(candidate)
+      && !FORM_LABEL_RE.test(candidate)
+      && words.length >= 2 && words.length <= 6
+      && allLong && hasLong) {
       result.rawLearnerName = candidate;
       result.learnerName    = candidate;
       break;
@@ -545,15 +551,29 @@ function parseOcrText(text) {
     const tableLines = tableStart >= 0 ? lines.slice(tableStart, tableStart + 15) : lines.slice(8, 25);
 
     for (const line of tableLines) {
+      // Stop scanning when we reach the criteria section (GC/PC table rows)
+      if (/\b(GC|PC)\s*\d|\bPerformance\s*Criteria|\bPC\s*Description|\bGC\s*Description/i.test(line)) break;
+
       const tokens = line.split(/[|\t]/).map(t => t.trim());
       for (const token of tokens) {
         const clean = token.replace(/\s{2,}/g, ' ').trim();
-        // Must be 2–5 alphabetic words, not a form label or trailing label
-        const wordCount = clean.split(/\s+/).length;
+        const words = clean.split(/\s+/);
+        const wordCount = words.length;
+
+        // Name quality checks:
+        // 1. 2–5 words (not a label or sentence)
+        // 2. ALL words must be ≥ 3 chars (filters "PC", "BF", "Se", "ni")
+        // 3. At least one word must be ≥ 5 chars (real names always have a long word)
+        // 4. Not a form label or trailing label keyword
+        const allWordsLongEnough = words.every(w => w.length >= 3);
+        const hasLongWord        = words.some(w => w.length >= 5);
+
         if (ALPHA_NAME_RE.test(clean)
           && !FORM_LABEL_RE.test(clean)
           && !TRAILING_LABELS.test(clean)
-          && wordCount >= 2 && wordCount <= 5) {
+          && wordCount >= 2 && wordCount <= 5
+          && allWordsLongEnough
+          && hasLongWord) {
           result.rawLearnerName = result.rawLearnerName || clean;
           result.learnerName = clean;
           break;
