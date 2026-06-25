@@ -416,62 +416,94 @@ function parseOcrText(text) {
   };
 
   // ── Name extraction ──────────────────────────────────────────
-  // The OCR reads the form table in a specific pattern:
-  //   Line A: "Learner Name  Course Code | ENE61"   (labels row)
-  //   Line B: "[garbled] | Alhanoo Nasser Alnebsl  Course Code |"  (values row)
+  // The form is a table. OCR reads it as two rows per section:
+  //   Label row: "Learner Name  Course Code | ENE61"
+  //   Value row: "[garbled] | Aysha Alrashdi  Course Code |"
   //
-  // Strategy 1: Look on the value row — the name is between the first `|`
-  //             and a trailing label keyword like "Course Code" or "Subject".
+  // The grey-shaded label cells ("Learner Name", "ATS ID") are often
+  // invisible to Tesseract. So we use structure rather than labels:
   //
-  // Strategy 2: Standard label-then-value patterns (same-line / next-line).
+  // Strategy A — STRUCTURE: find text between `|` and a trailing printed
+  //   label ("Course Code", "Subject", "ATS"). This works even when
+  //   "Learner Name" is unreadable. Matches: "| NAME Course Code".
   //
-  // Strategy 3: Any pipe-separated token near "Learner Name" that looks like a name.
+  // Strategy B — LABEL: look for "Learner Name" / "Student Name" etc.
+  //   and extract what follows (same-line or next-line).
+  //
+  // Strategy C — FUZZY: accept any letter-only token of 4–50 chars from
+  //   the first 15 lines, avoiding known form labels.
 
-  const NAME_LABELS = [
-    'Learner\\s*Name',
-    'Student\\s*Name',
-    'Staff\\s*Name',
-    'Employee\\s*Name',
-    'Full\\s*Name',
-    'Your\\s*Name',
-    'Candidate\\s*Name',
-    'Trainee\\s*Name',
-    '(?!Course|Assessment|Subject|Unit|Program|Task|Module|Outcome|Criteria|Milestone)\\w+\\s+Name',
-    'Name',
+  const TRAILING_LABELS = /(?:Course\s*Code|Subject|ATS|Submission|Assessment|Unit|Program)/i;
+  const ALPHA_NAME_RE   = /^[A-Za-z][A-Za-z\s.\-']{2,50}$/;
+
+  // Strategy A: structural pattern — name precedes a known trailing label
+  const structMatches = [
+    ...text.matchAll(/\|\s*([A-Za-z][^|\n]{3,60}?)\s+(?=Course\s*Code|Subject\s*\|)/gi)
   ];
-
-  // Strategy 1 — value row after label row:
-  // "Learner Name [anything on same line]\n[junk]| NAME Course Code"
-  for (const label of NAME_LABELS) {
-    const re = new RegExp(
-      `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z][^|\\n]{2,60}?)\\s*(?:Course|Subject|ATS|\\|\\s*\\n|$)`,
-      'i'
-    );
-    const m = text.match(re);
-    if (m) {
-      const candidate = m[1].trim();
+  for (const m of structMatches) {
+    const candidate = m[1].trim().replace(/\s{2,}/g, ' ');
+    if (ALPHA_NAME_RE.test(candidate) && !FORM_LABEL_RE.test(candidate) && candidate.split(' ').length >= 2) {
       result.rawLearnerName = candidate;
-      if (candidate.length >= 3 && !FORM_LABEL_RE.test(candidate)) {
-        result.learnerName = candidate;
-        break;
-      }
+      result.learnerName    = candidate;
+      break;
     }
   }
 
-  // Strategy 2 — standard same-line / next-line if strategy 1 found nothing
+  // Strategy B: label-based search (works when label cell IS readable)
   if (!result.learnerName) {
+    const NAME_LABELS = [
+      'Learner\\s*Name', 'Student\\s*Name', 'Staff\\s*Name',
+      'Employee\\s*Name', 'Full\\s*Name', 'Candidate\\s*Name',
+      '(?!Course|Assessment|Subject|Unit|Outcome)\\w+\\s+Name', 'Name',
+    ];
     for (const label of NAME_LABELS) {
+      // Check value row (next line after label row)
+      const re = new RegExp(
+        `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z][^|\\n]{2,60}?)\\s*${TRAILING_LABELS.source}`,
+        'i'
+      );
+      const m = text.match(re);
+      if (m) {
+        const candidate = m[1].trim();
+        result.rawLearnerName = candidate;
+        if (!FORM_LABEL_RE.test(candidate) && candidate.length >= 3) {
+          result.learnerName = candidate;
+          break;
+        }
+      }
+      // Also check standard same-line / next-line
       const found = extractAfterLabel(text, label);
-      if (!found) continue;
-      if (!result.rawLearnerName) result.rawLearnerName = found.raw;
-      if (!FORM_LABEL_RE.test(found.value)) {
+      if (found && !result.rawLearnerName) result.rawLearnerName = found.raw;
+      if (found && !FORM_LABEL_RE.test(found.value)) {
         result.learnerName = found.value;
         break;
       }
     }
   }
 
-  if (!result.rawLearnerName) result.rawLearnerName = '(no name label found in OCR text)';
+  // Strategy C: fuzzy — scan first 20 lines for a multi-word alphabetic name
+  if (!result.learnerName) {
+    const earlyLines = text.split('\n').slice(0, 20);
+    for (const line of earlyLines) {
+      // Split by pipe/tab and look for name-like tokens
+      const tokens = line.split(/[|\t]/).map(t => t.trim());
+      for (const token of tokens) {
+        const clean = token.replace(/\s{2,}/g, ' ').trim();
+        if (ALPHA_NAME_RE.test(clean)
+          && !FORM_LABEL_RE.test(clean)
+          && !TRAILING_LABELS.test(clean)
+          && clean.split(' ').length >= 2      // at least two words
+          && clean.split(' ').length <= 6) {   // not a sentence
+          result.rawLearnerName = result.rawLearnerName || clean;
+          result.learnerName = clean;
+          break;
+        }
+      }
+      if (result.learnerName) break;
+    }
+  }
+
+  if (!result.rawLearnerName) result.rawLearnerName = '(name not found in OCR text)';
 
   // ── ID extraction ─────────────────────────────────────────────
   // Same table pattern: ID is after the first `|` on the ATS ID value row.
