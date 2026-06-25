@@ -328,13 +328,19 @@ function parseOcrText(text) {
 
   // ── Learner Name ──
   // Pattern: "Learner Name [name] Course Code" (all on one line from OCR)
+  // Form labels to reject — OCR sometimes reads the next printed label as the name
+  const FORM_LABELS = /^(course\s*code|ats\s*id|subject|unit\s*code|program\s*code|nqc|learner|submission|assessment|milestone|outcome|performance|task\s*\d)/i;
+
   const nameLineMatch = text.match(/Learner\s*Name\s+([A-Za-z][^\n|]{2,40}?)(?:\s{2,}|\s+Course|\s+\|)/i);
   if (nameLineMatch) {
-    result.learnerName = nameLineMatch[1].trim();
+    const candidate = nameLineMatch[1].trim();
+    result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
   } else {
-    // Fallback: any text after "Learner Name" up to end of line
     const m = text.match(/Learner\s*Name[:\s]+([A-Za-z][^\n]{2,40})/i);
-    if (m) result.learnerName = m[1].trim().replace(/\s*Course.*$/i, '').trim();
+    if (m) {
+      const candidate = m[1].trim().replace(/\s*Course.*$/i, '').trim();
+      result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
+    }
   }
 
   // ── ATS ID ──
