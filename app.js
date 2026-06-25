@@ -469,154 +469,172 @@ function parseOcrText(text) {
     criteriaType: '', criteriaStart: '', criteriaEnd: '',
   };
 
-  // ── Name extraction ──────────────────────────────────────────
-  // The form is a table. OCR reads it as two rows per section:
-  //   Label row: "Learner Name  Course Code | ENE61"
-  //   Value row: "[garbled] | Aysha Alrashdi  Course Code |"
-  //
-  // The grey-shaded label cells ("Learner Name", "ATS ID") are often
-  // invisible to Tesseract. So we use structure rather than labels:
-  //
-  // Strategy A — STRUCTURE: find text between `|` and a trailing printed
-  //   label ("Course Code", "Subject", "ATS"). This works even when
-  //   "Learner Name" is unreadable. Matches: "| NAME Course Code".
-  //
-  // Strategy B — LABEL: look for "Learner Name" / "Student Name" etc.
-  //   and extract what follows (same-line or next-line).
-  //
-  // Strategy C — FUZZY: accept any letter-only token of 4–50 chars from
-  //   the first 15 lines, avoiding known form labels.
+  const lines = text.split('\n');
 
-  const TRAILING_LABELS = /(?:Course\s*Code|Subject|ATS|Submission|Assessment|Unit|Program)/i;
-  const ALPHA_NAME_RE   = /^[A-Za-z][A-Za-z\s.\-']{2,50}$/;
+  // ── Helpers ──────────────────────────────────────────────────
+  // Quality check for a name candidate
+  function isValidName(s) {
+    if (!s || s.length < 4) return false;
+    const clean = s.trim().replace(/\s{2,}/g, ' ');
+    const words = clean.split(/\s+/);
+    return (
+      /^[A-Za-z][A-Za-z\s.\-']{3,}$/.test(clean) &&  // only letters/spaces/dots
+      words.length >= 2 && words.length <= 6 &&         // 2–6 words
+      words.every(w => w.length >= 3) &&                // all words ≥ 3 chars
+      words.some(w => w.length >= 5) &&                 // at least one ≥ 5 chars
+      !FORM_LABEL_RE.test(clean)                        // not a form label
+    );
+  }
 
-  // Strategy A: structural pattern — name precedes a known trailing label
-  const structMatches = [
-    ...text.matchAll(/\|\s*([A-Za-z][^|\n]{3,60}?)\s+(?=Course\s*Code|Subject\s*\|)/gi)
+  // Find the index of the line that contains a label keyword
+  function findLabelLine(patterns) {
+    for (const pat of patterns) {
+      const re = new RegExp(`\\b${pat}\\b`, 'i');
+      const idx = lines.findIndex(l => re.test(l));
+      if (idx >= 0) return { idx, re };
+    }
+    return null;
+  }
+
+  // Extract a value adjacent to the label:
+  //   1. Same line — text after the label, right of a pipe or separator
+  //   2. Next 1–3 lines — look for value between pipes or before a trailing label
+  function extractValueNearLabel(labelResult) {
+    if (!labelResult) return null;
+    const { idx, re } = labelResult;
+
+    // ── Same-line extraction ──
+    const labelLine = lines[idx];
+    const matchPos  = labelLine.search(re);
+    if (matchPos >= 0) {
+      const afterLabel = labelLine.slice(matchPos + labelLine.match(re)[0].length);
+      // Pattern: "| VALUE |" or "| VALUE Course Code" or ": VALUE"
+      for (const pattern of [
+        /\|\s*([A-Za-z][^|\n]{3,60}?)\s*(?:\||\bCourse|\bSubject|$)/i,
+        /[:\-]\s*([A-Za-z][^|\n]{3,60}?)\s*(?:\||\bCourse|\bSubject|$)/i,
+        /\s{2,}([A-Za-z][^|\n]{3,50}?)\s*(?:\||\bCourse|\bSubject|$)/i,
+      ]) {
+        const m = afterLabel.match(pattern);
+        if (m) {
+          const val = m[1].trim();
+          if (isValidName(val)) return val;
+        }
+      }
+    }
+
+    // ── Next-line extraction ──
+    // The form table puts the value row BELOW the label row.
+    // OCR reads: Label row → "Learner Name  Course Code | ENE61"
+    //            Value row → "[garbled] | VALUE  Course Code |"
+    for (let j = idx + 1; j <= Math.min(idx + 3, lines.length - 1); j++) {
+      const line = lines[j].trim();
+      if (!line) continue;
+
+      // Value between | and a trailing label keyword
+      const m1 = line.match(/\|\s*([A-Za-z][^|\n]{3,60}?)\s+(?:Course\s*Code|Subject|ATS|Submission)/i);
+      if (m1) { const v = m1[1].trim(); if (isValidName(v)) return v; }
+
+      // Value between two pipes
+      const m2 = line.match(/\|\s*([A-Za-z][^|\n]{3,50}?)\s*\|/i);
+      if (m2) { const v = m2[1].trim(); if (isValidName(v)) return v; }
+
+      // Any pipe-separated segment that looks like a name
+      const segs = line.split('|').map(s => s.trim());
+      for (const seg of segs) {
+        if (isValidName(seg)) return seg;
+      }
+    }
+    return null;
+  }
+
+  // ── NAME: label-first ─────────────────────────────────────────
+  // "Learner Name" and similar labels are the ground truth markers.
+  // Find the label line, then extract the adjacent value cell.
+  const NAME_LABEL_PATTERNS = [
+    'Learner\\s*Name', 'Student\\s*Name', 'Staff\\s*Name',
+    'Employee\\s*Name', 'Candidate\\s*Name', 'Trainee\\s*Name', 'Full\\s*Name',
   ];
-  for (const m of structMatches) {
-    const candidate = m[1].trim().replace(/\s{2,}/g, ' ');
-    const words     = candidate.split(/\s+/);
-    const allLong   = words.every(w => w.length >= 3);
-    const hasLong   = words.some(w => w.length >= 5);
-    if (ALPHA_NAME_RE.test(candidate)
-      && !FORM_LABEL_RE.test(candidate)
-      && words.length >= 2 && words.length <= 6
-      && allLong && hasLong) {
-      result.rawLearnerName = candidate;
-      result.learnerName    = candidate;
-      break;
+
+  const nameLabelResult = findLabelLine(NAME_LABEL_PATTERNS);
+  if (nameLabelResult) {
+    const val = extractValueNearLabel(nameLabelResult);
+    if (val) {
+      result.rawLearnerName = val;
+      result.learnerName    = val;
     }
   }
 
-  // Strategy B: label-based search (works when label cell IS readable)
+  // Fallback: structural pattern — value precedes "Course Code" after a pipe
+  // Used when the "Learner Name" label cell was too grey for OCR to read.
   if (!result.learnerName) {
-    const NAME_LABELS = [
-      'Learner\\s*Name', 'Student\\s*Name', 'Staff\\s*Name',
-      'Employee\\s*Name', 'Full\\s*Name', 'Candidate\\s*Name',
-      '(?!Course|Assessment|Subject|Unit|Outcome)\\w+\\s+Name', 'Name',
-    ];
-    for (const label of NAME_LABELS) {
-      // Check value row (next line after label row)
-      const re = new RegExp(
-        `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z][^|\\n]{2,60}?)\\s*${TRAILING_LABELS.source}`,
-        'i'
-      );
-      const m = text.match(re);
-      if (m) {
-        const candidate = m[1].trim();
+    for (const m of text.matchAll(/\|\s*([A-Za-z][^|\n]{3,60}?)\s+(?=Course\s*Code)/gi)) {
+      const candidate = m[1].trim().replace(/\s{2,}/g, ' ');
+      if (isValidName(candidate)) {
         result.rawLearnerName = candidate;
-        if (!FORM_LABEL_RE.test(candidate) && candidate.length >= 3) {
-          result.learnerName = candidate;
-          break;
-        }
-      }
-      // Also check standard same-line / next-line
-      const found = extractAfterLabel(text, label);
-      if (found && !result.rawLearnerName) result.rawLearnerName = found.raw;
-      if (found && !FORM_LABEL_RE.test(found.value)) {
-        result.learnerName = found.value;
+        result.learnerName    = candidate;
         break;
       }
     }
   }
 
-  // Strategy C: fuzzy — scan pipe-separated tokens AFTER the first table row
-  // (skip the header logo/address which appears before any | character)
-  if (!result.learnerName) {
-    const lines = text.split('\n');
-    // Find where the table starts — first line containing a pipe character
-    const tableStart = lines.findIndex(l => l.includes('|'));
-    // Scan from the table start (skip the school header above it)
-    const tableLines = tableStart >= 0 ? lines.slice(tableStart, tableStart + 15) : lines.slice(8, 25);
-
-    for (const line of tableLines) {
-      // Stop scanning when we reach the criteria section (GC/PC table rows)
-      if (/\b(GC|PC)\s*\d|\bPerformance\s*Criteria|\bPC\s*Description|\bGC\s*Description/i.test(line)) break;
-
-      const tokens = line.split(/[|\t]/).map(t => t.trim());
-      for (const token of tokens) {
-        const clean = token.replace(/\s{2,}/g, ' ').trim();
-        const words = clean.split(/\s+/);
-        const wordCount = words.length;
-
-        // Name quality checks:
-        // 1. 2–5 words (not a label or sentence)
-        // 2. ALL words must be ≥ 3 chars (filters "PC", "BF", "Se", "ni")
-        // 3. At least one word must be ≥ 5 chars (real names always have a long word)
-        // 4. Not a form label or trailing label keyword
-        const allWordsLongEnough = words.every(w => w.length >= 3);
-        const hasLongWord        = words.some(w => w.length >= 5);
-
-        if (ALPHA_NAME_RE.test(clean)
-          && !FORM_LABEL_RE.test(clean)
-          && !TRAILING_LABELS.test(clean)
-          && wordCount >= 2 && wordCount <= 5
-          && allWordsLongEnough
-          && hasLongWord) {
-          result.rawLearnerName = result.rawLearnerName || clean;
-          result.learnerName = clean;
-          break;
-        }
-      }
-      if (result.learnerName) break;
-    }
+  if (!result.rawLearnerName) {
+    result.rawLearnerName = nameLabelResult
+      ? `(label found on line ${nameLabelResult.idx + 1} but value was unreadable)`
+      : '("Learner Name" label not found in OCR — label cell may have been unreadable)';
   }
 
-  if (!result.rawLearnerName) result.rawLearnerName = '(name not found in OCR text)';
-
-  // ── ID extraction ─────────────────────────────────────────────
-  // Same table pattern: ID is after the first `|` on the ATS ID value row.
-  // Also try standard label-then-value patterns.
-  const ID_LABELS = [
-    'ATS\\s*ID', 'ASI', 'AST\\s*ID',          // "ATS ID" + common OCR garbles
-    'Student\\s*(?:ID|No)',
-    'Staff\\s*(?:ID|No)',
-    'Employee\\s*(?:ID|No)',
-    'Trainee\\s*(?:ID|No)',
-    'Learner\\s*(?:ID|No)',
+  // ── ID: label-first ──────────────────────────────────────────
+  // "ATS ID", "Student ID" etc. are the markers for the ID field.
+  // Find the label, then look right (same line) or below (next row).
+  const ID_LABEL_PATTERNS = [
+    'ATS\\s*ID', 'ASI', 'AST\\s*ID',        // "ATS ID" + common OCR misreads
+    'Student\\s*(?:ID|No\\.?)',
+    'Staff\\s*(?:ID|No\\.?)',
+    'Employee\\s*(?:ID|No\\.?)',
+    'Learner\\s*(?:ID|No\\.?)',
+    'Trainee\\s*(?:ID|No\\.?)',
     'Emirates\\s*ID',
-    'ID\\s*(?:No|Number)',
+    'ID\\s*(?:No\\.?|Number)',
   ];
 
-  // Strategy 1: value row after ID label row
-  for (const label of ID_LABELS) {
-    const re = new RegExp(
-      `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z0-9][^|\\n]{1,30}?)(?:\\s*\\|[^\\n]|\\s*\\n|$)`,
-      'i'
-    );
-    const m = text.match(re);
-    if (m) {
-      const digits = m[1].replace(/\D/g, '');
-      if (digits.length >= 4) { result.atsId = digits; break; }
+  function extractIdNearLabel(labelIdx) {
+    if (labelIdx < 0) return '';
+    // Check same line after the label
+    const labelLine = lines[labelIdx];
+    const afterPipe = labelLine.match(/\|\s*([A-Za-z0-9][^|\n]{1,30})/);
+    if (afterPipe) {
+      const digits = afterPipe[1].replace(/\D/g, '');
+      if (digits.length >= 4) return digits;
     }
+    // Check next 1–3 lines
+    for (let j = labelIdx + 1; j <= Math.min(labelIdx + 3, lines.length - 1); j++) {
+      const line = lines[j].trim();
+      if (!line) continue;
+      // Value between pipe and next pipe/end
+      const m = line.match(/\|\s*([A-Za-z0-9][^|\n]{1,30}?)(?:\s*\||$)/i);
+      if (m) {
+        const digits = m[1].replace(/\D/g, '');
+        if (digits.length >= 4) return digits;
+      }
+      // Any long digit sequence on this line
+      const digits = line.replace(/\D/g, '');
+      if (digits.length >= 5) return digits;
+    }
+    return '';
   }
 
-  // Strategy 2: standard inline / next-line label scan
+  const idLabelResult = findLabelLine(ID_LABEL_PATTERNS);
+  if (idLabelResult) {
+    result.atsId = extractIdNearLabel(idLabelResult.idx);
+  }
+
+  // Fallback: any long digit sequence near the name section
   if (!result.atsId) {
-    for (const label of ID_LABELS) {
-      const found = extractIdAfterLabel(text, label);
-      if (found) { result.atsId = found; break; }
+    const nameLineIdx = nameLabelResult?.idx ?? 0;
+    const scanEnd     = Math.min(nameLineIdx + 8, lines.length);
+    for (let j = nameLineIdx; j < scanEnd; j++) {
+      const digits = lines[j].replace(/\D/g, '');
+      if (digits.length >= 6) { result.atsId = digits; break; }
     }
   }
 
