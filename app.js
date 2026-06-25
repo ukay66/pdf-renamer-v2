@@ -50,7 +50,8 @@ async function pickFolder() {
     state.dirHandle = await window.showDirectoryPicker();
     state.pdfFiles = [];
     for await (const [name, handle] of state.dirHandle.entries()) {
-      if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) {
+      // Accept all file types — skip hidden files and the output subfolder
+      if (handle.kind === 'file' && !name.startsWith('.')) {
         state.pdfFiles.push({ name, handle });
       }
     }
@@ -59,7 +60,7 @@ async function pickFolder() {
     const zone = document.getElementById('zone-pdf');
     zone.classList.add('loaded');
     zone.removeEventListener('click', pickFolder);
-    zone.querySelector('h3').textContent = `${state.pdfFiles.length} PDF files loaded`;
+    zone.querySelector('h3').textContent = `${state.pdfFiles.length} files loaded`;
     zone.querySelector('p').textContent = state.dirHandle.name;
     const tag = zone.querySelector('.status-tag');
     tag.textContent = `${state.pdfFiles.length} files`;
@@ -242,7 +243,7 @@ async function startProcessing() {
           };
         }
 
-        const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint);
+        const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name);
         state.results.push({ pdf, parsed, filenameHint, match, newName, selected: true });
 
         const statusText = match.status === 'matched'    ? '✓ matched'
@@ -263,7 +264,7 @@ async function startProcessing() {
         state.results.push({
           pdf, parsed: {}, filenameHint: extractNameFromFilename(pdf.name),
           match: { status: 'error', candidates: state.students.slice(0, 3) },
-          newName: buildFilenameFromTemplate({}, null), selected: false,
+          newName: buildFilenameFromTemplate({}, null, '', pdf.name), selected: false,
         });
       }
     }
@@ -311,41 +312,70 @@ function addLog(msg, cls = '') {
 // ─────────────────────────────────────────────────────────────
 // PDF → CANVAS → OCR
 // ─────────────────────────────────────────────────────────────
-async function ocrFirstPage(fileHandle) {
-  await initPdfJs(); // no-op if already loaded
-  const file = await fileHandle.getFile();
-  const arrayBuffer = await file.arrayBuffer();
+// File types that can be OCR'd as images
+const IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','bmp','webp','tiff','tif']);
+const PDF_EXTS   = new Set(['pdf']);
 
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-  const page = await pdf.getPage(1);
-
-  // 4× scale ≈ 288 DPI — needed to read text in grey-shaded table cells
-  const viewport = page.getViewport({ scale: 4.0 });
-  const canvas = document.createElement('canvas');
-  canvas.width  = viewport.width;
-  canvas.height = viewport.height;
+// Greyscale + contrast-stretch preprocessing — helps OCR on grey-shaded cells
+function preprocessCanvas(canvas) {
   const ctx = canvas.getContext('2d');
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  await pdf.destroy();
-
-  // ── Contrast boost for grey-background label cells ──────────
-  // Convert to greyscale then stretch contrast so grey cells (≈180)
-  // become near-white and text (≈0-50) stays dark.
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = imgData.data;
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d   = img.data;
   for (let i = 0; i < d.length; i += 4) {
-    const grey = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-    // Stretch: map [0,220] → [0,255]; values ≥220 become white
+    const grey     = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
     const enhanced = grey >= 220 ? 255 : Math.round(grey / 220 * 255);
     d[i] = d[i + 1] = d[i + 2] = enhanced;
   }
-  ctx.putImageData(imgData, 0, 0);
+  ctx.putImageData(img, 0, 0);
+}
 
-  // PSM 6 = assume a single uniform block of text — better for form tables
-  const { data: { text } } = await state.tesseractWorker.recognize(canvas, {
-    rectangle: undefined,
-  });
+// OCR a PDF — renders page 1 to canvas then recognises
+async function ocrPdfPage(file) {
+  await initPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf  = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale: 4.0 });
+  const canvas   = document.createElement('canvas');
+  canvas.width   = viewport.width;
+  canvas.height  = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  await pdf.destroy();
+  preprocessCanvas(canvas);
+  const { data: { text } } = await state.tesseractWorker.recognize(canvas);
   return text;
+}
+
+// OCR an image file — loads as <img>, draws on canvas, recognises
+async function ocrImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = async () => {
+      try {
+        const scale  = 3.0;
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.naturalWidth  * scale;
+        canvas.height = img.naturalHeight * scale;
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        preprocessCanvas(canvas);
+        const { data: { text } } = await state.tesseractWorker.recognize(canvas);
+        resolve(text);
+      } catch (e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image failed to load')); };
+    img.src = url;
+  });
+}
+
+// Router: choose OCR path based on file extension
+async function ocrFirstPage(fileHandle) {
+  const file = await fileHandle.getFile();
+  const ext  = file.name.split('.').pop().toLowerCase();
+  if (PDF_EXTS.has(ext))   return await ocrPdfPage(file);
+  if (IMAGE_EXTS.has(ext)) return await ocrImageFile(file);
+  return ''; // Word, Excel, PPT etc — no content OCR; rely on filename + roster
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -593,23 +623,29 @@ function parseOcrText(text) {
 // FILENAME HELPERS
 // ─────────────────────────────────────────────────────────────
 function extractNameFromFilename(filename) {
-  // "Milestone 1 - Aysha  Alrashdi.pdf" → "Aysha Alrashdi"
-  const m = filename.replace(/\.pdf$/i, '').match(/[-–]\s+(.+)$/);
+  // Strip any extension, then extract name after " - " separator
+  const m = filename.replace(/\.[^.]+$/, '').match(/[-–]\s+(.+)$/);
   return m ? m[1].trim().replace(/\s+/g, ' ') : '';
 }
 
-function buildFilenameFromTemplate(parsed, student, filenameHint = '') {
+function fileExtension(filename) {
+  const m = (filename || '').match(/(\.[^.]+)$/);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '') {
   const { slots, separator, fixedTexts } = state.template;
+  const ext   = fileExtension(originalName) || '.pdf';
   const parts = [];
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (!slot) continue;
-    if (slot === 'Name')          parts.push(student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN');
-    else if (slot === 'ID')       parts.push(student?.atsId || parsed?.atsId || 'UNKNOWN');
+    if (slot === 'Name')               parts.push(student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN');
+    else if (slot === 'ID')            parts.push(student?.atsId || parsed?.atsId || 'UNKNOWN');
     else if (slot === 'FixedTemplate') parts.push((fixedTexts[i] || '').trim() || 'FIXED');
   }
-  if (parts.length === 0) return 'UNKNOWN.pdf';
-  return parts.join(separator) + '.pdf';
+  if (parts.length === 0) return 'UNKNOWN' + ext;
+  return parts.join(separator) + ext;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1113,7 +1149,7 @@ function handleManualAssign(select) {
   r.match.student = student;
   r.match.status  = 'low-confidence';
   const p = r.parsed;
-  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint);
+  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint, r.pdf.name);
   r.selected = true;
 
   // Update the row cells without full re-render
@@ -1175,7 +1211,7 @@ async function applyRenaming() {
     // Show done step
     const folderName = `Renamed_${ts}`;
     document.getElementById('done-title').textContent = `${done} file${done !== 1 ? 's' : ''} renamed!`;
-    document.getElementById('done-sub').textContent = `Copied to subfolder "${folderName}" inside your PDF folder.`;
+    document.getElementById('done-sub').textContent = `Renamed copies saved to subfolder "${folderName}" inside your selected folder.`;
     document.getElementById('done-stats').innerHTML = `
       <span class="pill pill-green">✅ ${done} renamed</span>
       ${errors > 0 ? `<span class="pill pill-red">❌ ${errors} errors</span>` : ''}
@@ -1226,7 +1262,7 @@ function downloadCSV() {
 function reapplyTemplate() {
   if (state.results.length === 0) return;
   state.results.forEach(r => {
-    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint);
+    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint, r.pdf.name);
     r.selected = true;
   });
   buildResultsTable();
@@ -1301,7 +1337,46 @@ window.addEventListener('unhandledrejection', e => console.error('app.js unhandl
 const SLOT_LABELS = { Name: 'Name', ID: 'ID', FixedTemplate: 'Fixed Text' };
 const EXAMPLE_VALUES = { Name: 'Aysha', ID: '571883', FixedTemplate: null };
 
-const SEP_IDS = ['sep-underscore', 'sep-hyphen', 'sep-space', 'sep-none'];
+const SEP_IDS    = ['sep-underscore', 'sep-hyphen', 'sep-space', 'sep-none'];
+const STORAGE_KEY = 'filerenamer_template';
+
+function saveTemplate() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      slots:      state.template.slots,
+      separator:  state.template.separator,
+      fixedTexts: state.template.fixedTexts,
+    }));
+  } catch (_) {}
+}
+
+function loadTemplate() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const t = JSON.parse(raw);
+    state.template.slots      = t.slots      || [null, null, null];
+    state.template.separator  = t.separator  ?? '_';
+    state.template.fixedTexts = t.fixedTexts || ['', '', ''];
+    // Restore slot selects
+    ['slot-1','slot-2','slot-3'].forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el) el.value = state.template.slots[i] || '';
+    });
+    // Restore separator active state
+    const SEP_MAP = {'_':'sep-underscore','-':'sep-hyphen',' ':'sep-space','':'sep-none'};
+    const activeSep = SEP_MAP[state.template.separator] || 'sep-underscore';
+    SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
+    document.getElementById(activeSep)?.classList.add('active');
+    // Restore fixed text inputs
+    state.template.fixedTexts.forEach((txt, i) => {
+      const el = document.getElementById(`fixed-text-${i + 1}`);
+      if (el) el.value = txt || '';
+    });
+    updateSlotOptions();
+    updatePreview();
+  } catch (_) {}
+}
 const SEP_DISPLAY = { '_': '_', '-': '-', ' ': '·', '': '∅' };
 
 function updateSlotOptions() {
@@ -1361,6 +1436,7 @@ function initTemplateUI() {
       updateSlotOptions();
       updatePreview();
       updateStartBtn();
+      saveTemplate();
     });
     // Per-slot fixed text
     const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
@@ -1368,6 +1444,7 @@ function initTemplateUI() {
       fixedInput.addEventListener('input', () => {
         state.template.fixedTexts[idx] = fixedInput.value;
         updatePreview();
+        saveTemplate();
       });
     }
   });
@@ -1381,6 +1458,7 @@ function initTemplateUI() {
       SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
       btn.classList.add('active');
       updatePreview();
+      saveTemplate();
     });
   });
 
@@ -1391,8 +1469,9 @@ function initTemplateUI() {
 // WIRE UP ALL EVENT LISTENERS (replaces all removed inline handlers)
 // ─────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Template configurator
+  // Template configurator — init first, then restore saved state
   initTemplateUI();
+  loadTemplate();    // restore last-used template from localStorage
 
   // Step 1 — file loaders
   document.getElementById('zone-pdf').addEventListener('click', pickFolder);

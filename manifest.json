@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PDF Assignment Renamer",
-  "version": "1.0.0",
-  "description": "OCR-powered renamer for student assignment PDFs — matches names to gradebook and applies standard filenames.",
+  "name": "File Renamer",
+  "version": "1.1.0",
+  "description": "OCR-powered batch file renamer for PDFs, images, Word, Excel and more — matches names to a roster and applies configurable naming templates.",
   "permissions": ["tabs"],
   "host_permissions": [],
   "action": {
