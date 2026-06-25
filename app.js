@@ -486,12 +486,23 @@ function parseOcrText(text) {
     );
   }
 
-  // Find the index of the line that contains a label keyword
-  function findLabelLine(patterns) {
-    for (const pat of patterns) {
-      const re = new RegExp(`\\b${pat}\\b`, 'i');
-      const idx = lines.findIndex(l => re.test(l));
-      if (idx >= 0) return { idx, re };
+  // Find the line that contains a label keyword.
+  // Uses three tiers — stops at the first tier that finds a match:
+  //   Tier 1 — exact word match (e.g. "Learner Name")
+  //   Tier 2 — partial/fuzzy match (tolerates OCR character swaps)
+  //   Tier 3 — fragment match (just a distinctive substring)
+  function findLabelLine(tiers) {
+    for (const tier of tiers) {
+      for (const pat of tier) {
+        // With word boundaries first
+        const reWb  = new RegExp(`\\b${pat}\\b`, 'i');
+        const idx1  = lines.findIndex(l => reWb.test(l));
+        if (idx1 >= 0) return { idx: idx1, re: reWb };
+        // Without word boundaries (catches run-together OCR like "LeamerName")
+        const reNwb = new RegExp(pat, 'i');
+        const idx2  = lines.findIndex(l => reNwb.test(l));
+        if (idx2 >= 0) return { idx: idx2, re: reNwb };
+      }
     }
     return null;
   }
@@ -547,15 +558,36 @@ function parseOcrText(text) {
     return null;
   }
 
-  // ── NAME: label-first ─────────────────────────────────────────
-  // "Learner Name" and similar labels are the ground truth markers.
-  // Find the label line, then extract the adjacent value cell.
-  const NAME_LABEL_PATTERNS = [
-    'Learner\\s*Name', 'Student\\s*Name', 'Staff\\s*Name',
-    'Employee\\s*Name', 'Candidate\\s*Name', 'Trainee\\s*Name', 'Full\\s*Name',
+  // ── NAME: label-first with 3-tier fuzzy keyword search ──────
+  // Tier 1 — exact standard labels (preferred)
+  // Tier 2 — OCR-error tolerant: common character substitutions in these words
+  //   OCR often swaps: n↔m, r↔n, e↔a, i↔l, N↔H, d↔cl, etc.
+  //   "Learner" → "Leamer", "Learner", "Leaner", "Lea rner"
+  //   "Name"    → "Hame", "Nam", "Hame", "Mame", "Nam e"
+  // Tier 3 — fragment fallback: just distinctive substrings
+  const NAME_LABEL_TIERS = [
+    // Tier 1: exact standard labels
+    [
+      'Learner\\s+Name', 'Student\\s+Name', 'Staff\\s+Name',
+      'Employee\\s+Name', 'Candidate\\s+Name', 'Trainee\\s+Name', 'Full\\s+Name',
+    ],
+    // Tier 2: tolerant of 1-2 character OCR errors in the label words
+    [
+      'Le[ae]?r?n[aeo]r?\\s+[NH]?[Nn]am[eo]?',  // Leaner/Learner + Name/Hame/Nam
+      'L[ea]{1,2}r?n\\w{0,3}\\s+[Nn]am',          // L(ea)rn... + Nam
+      'earn\\w*\\s+[Nn]am',                         // ...earn... + Nam
+      'learn\\w*\\s+[Nn]am',                        // learn... + Nam
+      'Student\\s+[Nn]am', 'Staff\\s+[Nn]am',       // other labels with fuzzy Nam
+    ],
+    // Tier 3: just the fragment — "earn" is unique enough on a form
+    [
+      'earn\\w{0,3}\\s+[Nn]a',  // "earner Na" from "Learner Name"
+      'arner\\s',                 // "arner " (end of Learner)
+      'rner\\s+N',               // "rner N" (Learner N...)
+    ],
   ];
 
-  const nameLabelResult = findLabelLine(NAME_LABEL_PATTERNS);
+  const nameLabelResult = findLabelLine(NAME_LABEL_TIERS);
   if (nameLabelResult) {
     const val = extractValueNearLabel(nameLabelResult);
     if (val) {
@@ -586,15 +618,29 @@ function parseOcrText(text) {
   // ── ID: label-first ──────────────────────────────────────────
   // "ATS ID", "Student ID" etc. are the markers for the ID field.
   // Find the label, then look right (same line) or below (next row).
-  const ID_LABEL_PATTERNS = [
-    'ATS\\s*ID', 'ASI', 'AST\\s*ID',        // "ATS ID" + common OCR misreads
-    'Student\\s*(?:ID|No\\.?)',
-    'Staff\\s*(?:ID|No\\.?)',
-    'Employee\\s*(?:ID|No\\.?)',
-    'Learner\\s*(?:ID|No\\.?)',
-    'Trainee\\s*(?:ID|No\\.?)',
-    'Emirates\\s*ID',
-    'ID\\s*(?:No\\.?|Number)',
+  // Tier 1: exact ATS/Student/Staff ID labels
+  // Tier 2: OCR tolerant — "ATS ID" often read as "ASI", "ATS lD", "ATslD",
+  //   "A1S", "ATG ID", "AT5 ID" (digit/letter swaps)
+  // Tier 3: fragments — just the "ATS" prefix or standalone "ID" near digits
+  const ID_LABEL_TIERS = [
+    // Tier 1: exact labels
+    [
+      'ATS\\s+ID', 'Student\\s+ID', 'Staff\\s+ID',
+      'Employee\\s+ID', 'Learner\\s+ID', 'Trainee\\s+ID', 'Emirates\\s+ID',
+    ],
+    // Tier 2: 1-2 char OCR errors
+    [
+      'A[TtGg1][SsI5]\\s*[IlL1][Dd]',  // ATS ID → ATSlD, A1S ID, ATG ID
+      'A[TtGg][SsI]\\s+[IilL1Dd]',      // ATS I, ATG I...
+      'ASI', 'AST\\s*ID', 'ATS\\s*lD', 'ATS\\s*1D',  // common single-word misreads
+      'A\\.T\\.S', 'A\\.T\\.S\\.',       // "A.T.S." style
+      'Student\\s+[IilL1]', 'Staff\\s+[IilL1]',  // fuzzy ID
+    ],
+    // Tier 3: just the prefix
+    [
+      '\\bATS\\b', '\\bASI\\b', '\\bATSID\\b',  // bare ATS
+      'Student\\s+No', 'Staff\\s+No', 'ID\\s+No', 'ID\\s+Number',
+    ],
   ];
 
   function extractIdNearLabel(labelIdx) {
@@ -623,7 +669,7 @@ function parseOcrText(text) {
     return '';
   }
 
-  const idLabelResult = findLabelLine(ID_LABEL_PATTERNS);
+  const idLabelResult = findLabelLine(ID_LABEL_TIERS);
   if (idLabelResult) {
     result.atsId = extractIdNearLabel(idLabelResult.idx);
   }
