@@ -127,14 +127,39 @@ function validateTemplate() {
   return state.template.slots.some(s => s !== null);
 }
 
+// True when at least one slot uses Name or ID — roster is required in that case
+function needsRoster() {
+  return state.template.slots.some(s => s === 'Name' || s === 'ID');
+}
+
+// Update the excel zone badge (Required/Optional) based on current slots
+function updateExcelZoneBadge() {
+  const badge = document.getElementById('excel-badge');
+  const desc  = document.getElementById('excel-zone-desc');
+  if (!badge) return;
+  const required = needsRoster();
+  badge.textContent = required ? 'Required' : 'Optional';
+  badge.style.background = required ? '#fee2e2' : '#fef9c3';
+  badge.style.color      = required ? '#991b1b' : '#854d0e';
+  badge.style.border     = required ? '1px solid #fecaca' : '1px solid #fde68a';
+  if (desc) {
+    desc.textContent = required
+      ? 'Upload your .xlsx roster — needed to match names and IDs found in the files'
+      : 'Optional — not needed when all slots use Fixed Template text only';
+  }
+}
+
 function updateStartBtn() {
   const btn   = document.getElementById('start-btn');
-  // Both folder AND Name/ID file are now required
-  const ready = state.pdfFiles.length > 0 && state.students.length > 0 && validateTemplate();
+  const rosterOk = !needsRoster() || state.students.length > 0;
+  const ready    = state.pdfFiles.length > 0 && rosterOk && validateTemplate();
   btn.disabled = !ready;
   if (ready) {
+    const rosterInfo = state.students.length > 0
+      ? ` · ${state.students.length} roster entries`
+      : needsRoster() ? '' : ' · no roster needed';
     btn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    Start OCR Processing (${state.pdfFiles.length} files · ${state.students.length} roster entries)`;
+    Start OCR Processing (${state.pdfFiles.length} files${rosterInfo})`;
   }
 }
 
@@ -1435,6 +1460,7 @@ function initTemplateUI() {
       state.template.slots[idx] = sel.value || null;
       updateSlotOptions();
       updatePreview();
+      updateExcelZoneBadge();
       updateStartBtn();
       saveTemplate();
     });
@@ -1471,7 +1497,8 @@ function initTemplateUI() {
 document.addEventListener('DOMContentLoaded', () => {
   // Template configurator — init first, then restore saved state
   initTemplateUI();
-  loadTemplate();    // restore last-used template from localStorage
+  loadTemplate();              // restore last-used template from localStorage
+  updateExcelZoneBadge();      // set badge based on restored slots
 
   // Step 1 — file loaders
   document.getElementById('zone-pdf').addEventListener('click', pickFolder);
