@@ -22,9 +22,7 @@ const state = {
   results: [],            // one entry per file after OCR
   tesseractWorker: null,
   template: {             // renaming template configured by user in Step 1
-    slots:      [null, null, null],  // e.g. ['Name', 'FixedTemplate', 'ID']
-    separator:  '_',
-    fixedTexts: ['', '', ''],        // independent text per slot
+    pattern: '',          // e.g. "ENE61_GC5.1_5.3_P_{id}.{ext}"
   },
   finalReport: [],
 };
@@ -124,12 +122,12 @@ async function pickExcel() {
 };
 
 function validateTemplate() {
-  return state.template.slots.some(s => s !== null);
+  return (state.template.pattern || '').trim().length > 0;
 }
 
-// True when at least one slot uses Name or ID — roster is required in that case
+// True when pattern contains {name} or {id} — roster is required in that case
 function needsRoster() {
-  return state.template.slots.some(s => s === 'Name' || s === 'ID');
+  return /\{(name|id)\}/i.test(state.template.pattern || '');
 }
 
 // Update the excel zone badge (Required/Optional) based on current slots
@@ -204,7 +202,7 @@ async function startProcessing() {
         match = { status: 'extracted', student: null, confidence: 1, candidates: [] };
       }
 
-      const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name);
+      const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name, i + 1);
       state.results.push({ pdf, parsed, filenameHint, match, newName, selected: !!match.student || match.status === 'extracted' });
 
       const conf = Math.round((match.confidence || 0) * 100);
@@ -658,30 +656,31 @@ function fileExtension(filename) {
   return m ? m[1].toLowerCase() : '';
 }
 
-function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '') {
-  const { slots, separator, fixedTexts } = state.template;
-  const ext       = fileExtension(originalName) || '.pdf';
+function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '', count = 0) {
   const hasRoster = state.students.length > 0;
-  const parts     = [];
-  for (let i = 0; i < slots.length; i++) {
-    const slot = slots[i];
-    if (!slot) continue;
-    if (slot === 'Name') {
-      // Roster loaded → use authoritative roster name only (no OCR fallback)
-      // No roster   → best-effort from OCR / filename
-      parts.push(hasRoster
-        ? (student?.name || 'UNKNOWN')
-        : (parsed?.learnerName || filenameHint || 'UNKNOWN'));
-    } else if (slot === 'ID') {
-      parts.push(hasRoster
-        ? (student?.atsId || 'UNKNOWN')
-        : (parsed?.atsId || 'UNKNOWN'));
-    } else if (slot === 'FixedTemplate') {
-      parts.push((fixedTexts[i] || '').trim() || 'FIXED');
-    }
+  const extWithDot = fileExtension(originalName) || '.pdf';
+  const ext        = extWithDot.slice(1); // without dot: "pdf", "docx"
+  const today      = new Date().toISOString().slice(0, 10);
+
+  const values = {
+    name:     hasRoster ? (student?.name  || 'UNKNOWN') : (parsed?.learnerName || filenameHint || 'UNKNOWN'),
+    id:       hasRoster ? (student?.atsId || 'UNKNOWN') : (parsed?.atsId || 'UNKNOWN'),
+    ext:      ext,
+    filetype: ext,                                             // alias
+    date:     today,
+    year:     today.slice(0, 4),
+    month:    today.slice(5, 7),
+    day:      today.slice(8, 10),
+    filename: (originalName || '').replace(/\.[^.]+$/, ''),   // no extension
+    count:    String(count).padStart(3, '0'),                  // 001, 002, 003
+    index:    String(count).padStart(3, '0'),                  // alias for count
+  };
+
+  let result = (state.template.pattern || '').trim();
+  for (const [token, value] of Object.entries(values)) {
+    result = result.replace(new RegExp(`\\{${token}\\}`, 'gi'), value);
   }
-  if (parts.length === 0) return 'UNKNOWN' + ext;
-  return parts.join(separator) + ext;
+  return result || 'UNKNOWN' + extWithDot;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1025,16 +1024,9 @@ function buildResultsTable() {
   const noRef = state.students.length === 0;
 
   // ── Populate template banner ──
-  const { slots, separator, fixedTexts } = state.template;
-  const LABELS = { Name: 'Name', ID: 'ID' };
   const templateDisplay = document.getElementById('review-template-display');
   if (templateDisplay) {
-    const parts = slots.map((s, i) => {
-      if (!s) return null;
-      if (s === 'FixedTemplate') return fixedTexts[i] || `Template${i + 1}`;
-      return LABELS[s] || s;
-    }).filter(Boolean);
-    templateDisplay.textContent = parts.length > 0 ? parts.join(separator) + '.pdf' : '— no template set —';
+    templateDisplay.textContent = state.template.pattern || '— no template set —';
   }
 
   // Show UNKNOWN hint if any filenames contain UNKNOWN and no reference file
@@ -1200,7 +1192,7 @@ function handleManualAssign(select) {
   r.match.student = student;
   r.match.status  = 'low-confidence';
   const p = r.parsed;
-  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint, r.pdf.name);
+  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint, r.pdf.name, idx + 1);
   r.selected = true;
 
   // Update the row cells without full re-render
@@ -1308,8 +1300,8 @@ function downloadCSV() {
 // Re-apply the current template to existing OCR results — no re-scan needed
 function reapplyTemplate() {
   if (state.results.length === 0) return;
-  state.results.forEach(r => {
-    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint, r.pdf.name);
+  state.results.forEach((r, i) => {
+    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint, r.pdf.name, i + 1);
     r.selected = true;
   });
   buildResultsTable();
@@ -1328,7 +1320,7 @@ function restart() {
   state.pdfFiles   = [];
   state.students   = [];
   state.results    = [];
-  state.template   = { slots: [null, null, null], separator: '_', fixedTexts: ['', '', ''] };
+  state.template   = { pattern: '' };
   state.finalReport = [];
 
   ['zone-pdf', 'zone-excel'].forEach(id => {
@@ -1347,17 +1339,9 @@ function restart() {
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Start Renaming`;
 
-  // Reset template UI
-  ['slot-1', 'slot-2', 'slot-3'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
-  document.getElementById('sep-underscore')?.classList.add('active');
-  [1, 2, 3].forEach(i => {
-    const el = document.getElementById(`fixed-text-${i}`);
-    if (el) { el.value = ''; el.classList.add('hidden'); }
-  });
+  // Reset template UI — keep saved pattern but clear the input visually
+  const patternEl = document.getElementById('template-pattern');
+  if (patternEl) patternEl.value = '';
   updatePreview();
   updateExcelZoneBadge();  // reset badge to Optional (slots are all null after restart)
   updateStartBtn();         // ensure start button is disabled until folder is re-selected
@@ -1383,124 +1367,97 @@ window.addEventListener('unhandledrejection', e => console.error('app.js unhandl
 // ─────────────────────────────────────────────────────────────
 // TEMPLATE CONFIGURATOR UI
 // ─────────────────────────────────────────────────────────────
-const SLOT_LABELS = { Name: 'Name', ID: 'ID', FixedTemplate: 'Fixed Text' };
-const EXAMPLE_VALUES = { Name: 'Aysha', ID: '571883', FixedTemplate: null };
-
-const SEP_IDS    = ['sep-underscore', 'sep-hyphen', 'sep-space', 'sep-none'];
 const STORAGE_KEY = 'filerenamer_template';
 
+// Sample values used in the live preview
+const PREVIEW_SAMPLES = {
+  name: 'Aysha Abdulla', id: '571883', ext: 'pdf', filetype: 'pdf',
+  date: '2026-06-26', year: '2026', month: '06', day: '26',
+  filename: 'Milestone 1 - Aysha', count: '001', index: '001',
+};
+
 function saveTemplate() {
-  // Only save the fixed template texts — not slot selections or separator.
-  // Slot choices (Name, ID) are not saved because restoring them would make
-  // the roster file appear Required on next open before the user sets anything.
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      fixedTexts: state.template.fixedTexts,
-    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ pattern: state.template.pattern }));
   } catch (_) {}
 }
 
 function loadTemplate() {
-  // Only restore the previously typed fixed template texts.
-  // Slots and separator always start fresh (empty / underscore).
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const t = JSON.parse(raw);
-    if (Array.isArray(t.fixedTexts)) {
-      state.template.fixedTexts = t.fixedTexts;
-      // Pre-fill the inputs so the text is ready when the user selects Fixed Template
-      t.fixedTexts.forEach((txt, i) => {
-        const el = document.getElementById(`fixed-text-${i + 1}`);
-        if (el && txt) el.value = txt;
-      });
+    if (t.pattern) {
+      state.template.pattern = t.pattern;
+      const el = document.getElementById('template-pattern');
+      if (el) el.value = t.pattern;
     }
   } catch (_) {}
 }
-const SEP_DISPLAY = { '_': '_', '-': '-', ' ': '·', '': '∅' };
-
-function updateSlotOptions() {
-  const used = state.template.slots.filter(s => s && s !== 'FixedTemplate');
-  ['slot-1', 'slot-2', 'slot-3'].forEach((id, idx) => {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    const currentVal = state.template.slots[idx];
-    Array.from(sel.options).forEach(opt => {
-      if (!opt.value || opt.value === 'FixedTemplate') return;
-      opt.disabled = used.includes(opt.value) && opt.value !== currentVal;
-    });
-    sel.classList.toggle('has-value', !!currentVal);
-    // Show/hide per-slot fixed text input
-    const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
-    if (fixedInput) fixedInput.classList.toggle('hidden', currentVal !== 'FixedTemplate');
-  });
-}
 
 function updatePreview() {
-  const { slots, separator, fixedTexts } = state.template;
-  const previewFn   = document.getElementById('preview-filename');
-  const previewEx   = document.getElementById('preview-example');
-  const sepChar     = SEP_DISPLAY[separator] ?? separator;
+  const pattern   = (state.template.pattern || '').trim();
+  const previewFn = document.getElementById('preview-filename');
+  const previewEx = document.getElementById('preview-example');
+  if (!previewFn) return;
 
-  ['sep-display-1', 'sep-display-2'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = separator === '' ? '∅' : separator === ' ' ? '·' : separator;
-  });
-
-  const activeSlots = slots.map((s, i) => ({ s, i })).filter(({ s }) => s);
-  if (activeSlots.length === 0) {
+  if (!pattern) {
     previewFn.textContent = '—';
-    previewEx.textContent = 'Select at least one slot above';
+    previewEx.textContent = 'Type a pattern above to see a preview';
     previewEx.style.color = '#ef4444';
     return;
   }
 
   previewEx.style.color = '';
-  const labelParts = activeSlots.map(({ s, i }) =>
-    s === 'FixedTemplate' ? (fixedTexts[i] || `Template${i + 1}`) : (SLOT_LABELS[s] || s)
-  );
-  const exParts = activeSlots.map(({ s, i }) =>
-    s === 'FixedTemplate' ? (fixedTexts[i].trim() || 'FIXED') : (EXAMPLE_VALUES[s] || s)
-  );
-  previewFn.textContent = labelParts.join(separator) + '.pdf';
-  previewEx.textContent = 'e.g. ' + exParts.join(separator) + '.pdf';
+  previewFn.textContent = pattern;   // show the pattern itself as the "template"
+
+  // Substitute sample values to show an example filename
+  let example = pattern;
+  for (const [k, v] of Object.entries(PREVIEW_SAMPLES)) {
+    example = example.replace(new RegExp(`\\{${k}\\}`, 'gi'), v);
+  }
+  previewEx.textContent = 'e.g.  ' + example;
 }
 
 function initTemplateUI() {
-  // Slot selects
-  ['slot-1', 'slot-2', 'slot-3'].forEach((id, idx) => {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    sel.addEventListener('change', () => {
-      state.template.slots[idx] = sel.value || null;
-      updateSlotOptions();
+  const patternInput = document.getElementById('template-pattern');
+  const tokenSelect  = document.getElementById('token-insert-select');
+
+  // Pattern text input
+  if (patternInput) {
+    patternInput.addEventListener('input', () => {
+      state.template.pattern = patternInput.value;
       updatePreview();
       updateExcelZoneBadge();
       updateStartBtn();
-      // Note: slot selections are intentionally NOT saved to localStorage
+      saveTemplate();
     });
-    // Per-slot fixed text
-    const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
-    if (fixedInput) {
-      fixedInput.addEventListener('input', () => {
-        state.template.fixedTexts[idx] = fixedInput.value;
-        updatePreview();
-        saveTemplate();
-      });
-    }
-  });
+    patternInput.addEventListener('focus', () => {
+      patternInput.style.borderColor = 'var(--blue)';
+    });
+    patternInput.addEventListener('blur', () => {
+      patternInput.style.borderColor = 'var(--gray-300)';
+    });
+  }
 
-  // Separator buttons — not saved to localStorage
-  SEP_IDS.forEach(btnId => {
-    const btn = document.getElementById(btnId);
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-      state.template.separator = btn.dataset.sep;
-      SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
-      btn.classList.add('active');
+  // Token insert dropdown — inserts selected token at cursor position
+  if (tokenSelect) {
+    tokenSelect.addEventListener('change', () => {
+      const token = tokenSelect.value;
+      if (!token || !patternInput) { tokenSelect.value = ''; return; }
+      const start = patternInput.selectionStart ?? patternInput.value.length;
+      const end   = patternInput.selectionEnd   ?? start;
+      patternInput.value = patternInput.value.slice(0, start) + token + patternInput.value.slice(end);
+      patternInput.selectionStart = patternInput.selectionEnd = start + token.length;
+      patternInput.focus();
+      state.template.pattern = patternInput.value;
       updatePreview();
+      updateExcelZoneBadge();
+      updateStartBtn();
+      saveTemplate();
+      tokenSelect.value = ''; // reset dropdown to placeholder
     });
-  });
+  }
 
   updatePreview();
 }

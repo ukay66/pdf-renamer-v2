@@ -524,75 +524,42 @@
   <!-- Renaming Template -->
   <div class="card">
     <div class="card-title">Renaming Template</div>
-    <div class="card-sub">Choose what goes into the new filename and how items are separated. At least one slot must be selected.</div>
+    <div class="card-sub">Type your filename pattern using <code style="background:var(--gray-100);padding:1px 5px;border-radius:4px;font-size:12px;">{token}</code> placeholders. Use the dropdown to insert a token at the cursor.</div>
 
-    <!-- Slot builder — each slot has its own fixed-text input -->
-    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-
-      <!-- Slot 1 -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;min-width:148px;">
-        <span style="font-size:10px;font-weight:700;color:var(--gray-400);letter-spacing:0.06em;text-transform:uppercase;">Slot 1</span>
-        <select id="slot-1" class="slot-select">
-          <option value="">— Not used —</option>
-          <option value="Name">Name</option>
-          <option value="ID">ID</option>
-          <option value="FixedTemplate">Fixed Template</option>
-        </select>
-        <input type="text" id="fixed-text-1" class="slot-fixed-input hidden"
-          placeholder="Template 1…"
-          style="width:100%;padding:7px 10px;border:1.5px solid var(--blue);border-radius:7px;
-                 font-size:12px;font-family:monospace;color:var(--gray-800);outline:none;">
-      </div>
-
-      <div class="sep-display" id="sep-display-1" style="font-size:18px;font-weight:700;color:var(--gray-400);padding:0 2px;align-self:center;margin-top:22px;">_</div>
-
-      <!-- Slot 2 -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;min-width:148px;">
-        <span style="font-size:10px;font-weight:700;color:var(--gray-400);letter-spacing:0.06em;text-transform:uppercase;">Slot 2</span>
-        <select id="slot-2" class="slot-select">
-          <option value="">— Not used —</option>
-          <option value="Name">Name</option>
-          <option value="ID">ID</option>
-          <option value="FixedTemplate">Fixed Template</option>
-        </select>
-        <input type="text" id="fixed-text-2" class="slot-fixed-input hidden"
-          placeholder="Template 2…"
-          style="width:100%;padding:7px 10px;border:1.5px solid var(--blue);border-radius:7px;
-                 font-size:12px;font-family:monospace;color:var(--gray-800);outline:none;">
-      </div>
-
-      <div class="sep-display" id="sep-display-2" style="font-size:18px;font-weight:700;color:var(--gray-400);padding:0 2px;align-self:center;margin-top:22px;">_</div>
-
-      <!-- Slot 3 -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;min-width:148px;">
-        <span style="font-size:10px;font-weight:700;color:var(--gray-400);letter-spacing:0.06em;text-transform:uppercase;">Slot 3</span>
-        <select id="slot-3" class="slot-select">
-          <option value="">— Not used —</option>
-          <option value="Name">Name</option>
-          <option value="ID">ID</option>
-          <option value="FixedTemplate">Fixed Template</option>
-        </select>
-        <input type="text" id="fixed-text-3" class="slot-fixed-input hidden"
-          placeholder="Template 3…"
-          style="width:100%;padding:7px 10px;border:1.5px solid var(--blue);border-radius:7px;
-                 font-size:12px;font-family:monospace;color:var(--gray-800);outline:none;">
-      </div>
+    <!-- Pattern input -->
+    <div style="margin-bottom:12px;">
+      <input type="text" id="template-pattern"
+        placeholder="e.g.  ENE61_GC5.1_5.3_P_{id}.{ext}  or  {name}_{id}.{ext}"
+        style="width:100%;padding:11px 14px;border:1.5px solid var(--gray-300);border-radius:9px;
+               font-size:14px;font-family:monospace;color:var(--gray-800);outline:none;
+               transition:border-color 0.15s;">
     </div>
 
-    <!-- Separator -->
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-      <span style="font-size:12px;font-weight:600;color:var(--gray-600);">Separator:</span>
-      <button id="sep-underscore" class="sep-btn active" data-sep="_">_ Underscore</button>
-      <button id="sep-hyphen"     class="sep-btn" data-sep="-">- Hyphen</button>
-      <button id="sep-space"      class="sep-btn" data-sep=" ">␣ Space</button>
-      <button id="sep-none"       class="sep-btn" data-sep="">∅ None</button>
+    <!-- Token insert dropdown -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+      <span style="font-size:12px;font-weight:600;color:var(--gray-600);white-space:nowrap;">Insert token:</span>
+      <select id="token-insert-select"
+        style="padding:7px 12px;border:1.5px solid var(--gray-300);border-radius:8px;
+               font-size:13px;color:var(--gray-700);background:white;cursor:pointer;
+               min-width:320px;outline:none;">
+        <option value="">— Select a token to insert —</option>
+        <option value="{name}">  {name}      — Matched name from the roster file</option>
+        <option value="{id}">    {id}        — Matched ID number from the roster file</option>
+        <option value="{ext}">   {ext}       — Original file extension (pdf, docx, jpg…)</option>
+        <option value="{date}">  {date}      — Today's date in YYYY-MM-DD format</option>
+        <option value="{year}">  {year}      — Current year (e.g. 2026)</option>
+        <option value="{month}"> {month}     — Current month number (e.g. 06)</option>
+        <option value="{day}">   {day}       — Current day number (e.g. 25)</option>
+        <option value="{filename}">{filename} — Original filename without its extension</option>
+        <option value="{count}"> {count}     — Auto-incremental file counter: 001, 002, 003…</option>
+      </select>
     </div>
 
     <!-- Live preview -->
     <div style="background:var(--gray-100);border-radius:8px;padding:12px 14px;border:1px solid var(--gray-200);">
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--gray-400);margin-bottom:5px;">Preview</div>
       <div id="preview-filename" style="font-size:15px;font-weight:700;font-family:monospace;color:var(--gray-800);margin-bottom:3px;">—</div>
-      <div id="preview-example" style="font-size:11px;color:var(--gray-500);">Select at least one slot above</div>
+      <div id="preview-example" style="font-size:11px;color:var(--gray-500);">Type a pattern above to see a preview</div>
     </div>
 
     <div class="info-note" id="step1-note" style="margin-top:12px;">
