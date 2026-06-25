@@ -321,44 +321,118 @@ async function ocrFirstPage(fileHandle) {
 // ─────────────────────────────────────────────────────────────
 // OCR TEXT PARSING
 // ─────────────────────────────────────────────────────────────
-function parseOcrText(text) {
-  const result = {
-    learnerName: '',
-    atsId: '',
-    courseCode: '',
-    criteriaType: '',
-    criteriaStart: '',
-    criteriaEnd: '',
-  };
 
-  // ── Learner Name ──
-  // Pattern: "Learner Name [name] Course Code" (all on one line from OCR)
-  // Form labels to reject — OCR sometimes reads the next printed label as the name
-  const FORM_LABELS = /^(course\s*code|ats\s*id|subject|unit\s*code|program\s*code|nqc|learner|submission|assessment|milestone|outcome|performance|task\s*\d)/i;
+// Labels that look like names but are actually form field labels — reject these
+const FORM_LABEL_RE = /^(course|ats|subject|unit|program|nqc|submission|assessment|milestone|outcome|performance|task|module|criteria|reference|date|signature|teacher|instructor|evaluator|mark|score|grade|result|total)/i;
+// Prefixes that make "Name" invalid (e.g. "Course Name", "Assessment Name")
+const BAD_NAME_PREFIX = /^(course|assessment|subject|unit|program|task|module|outcome|criteria|milestone)/i;
 
-  const nameLineMatch = text.match(/Learner\s*Name\s+([A-Za-z][^\n|]{2,40}?)(?:\s{2,}|\s+Course|\s+\|)/i);
-  if (nameLineMatch) {
-    const candidate = nameLineMatch[1].trim();
-    result.rawLearnerName = candidate; // keep raw for debug
-    result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
-  } else {
-    const m = text.match(/Learner\s*Name[:\s]+([A-Za-z][^\n]{2,40})/i);
+/**
+ * Scan OCR text for a label keyword and return the text that immediately
+ * follows it — on the same line or the next line.
+ * labelPattern: regex string for the label (e.g. "Learner\\s+Name")
+ * Returns { value, raw } or null.
+ */
+function extractAfterLabel(text, labelPattern) {
+  // Same-line: LABEL [: | - spaces]* VALUE [end of column or line]
+  const re1 = new RegExp(
+    `\\b${labelPattern}\\s*[:\\-|]*\\s*([A-Za-z][^\\n|\\t]{1,60}?)(?:\\s{2,}|\\s*[|]|\\s*\\n|$)`,
+    'i'
+  );
+  // Next-line: LABEL\n VALUE
+  const re2 = new RegExp(
+    `\\b${labelPattern}\\s*[:\\-|]*\\s*\\n+\\s*([A-Za-z][^\\n|\\t]{1,60})`,
+    'i'
+  );
+  for (const re of [re1, re2]) {
+    const m = text.match(re);
     if (m) {
-      const candidate = m[1].trim().replace(/\s*Course.*$/i, '').trim();
-      result.rawLearnerName = candidate;
-      result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
+      // Strip trailing label bleed (e.g. "Aysha   Course Code" → "Aysha")
+      const raw = m[1].trim()
+        .replace(/\s+(Course|Subject|ATS|Unit|Program|NQC|Task|Assessment|Submission|Outcome).*$/i, '')
+        .trim();
+      if (raw.length >= 2) return { value: raw, raw: m[1].trim() };
     }
   }
-  if (!result.rawLearnerName) result.rawLearnerName = '(not found near "Learner Name" label)';
+  return null;
+}
 
-  // ── ATS ID ──
-  // Pattern: "ATS ID [digits+noise] Subject" — extract digit sequence
-  const atsLineMatch = text.match(/ATS\s*ID\s+([A-Za-z0-9\s|!@#]{2,30}?)(?:\s{2,}|\s+Subject|\s*\n)/i);
-  if (atsLineMatch) {
-    result.atsId = atsLineMatch[1].replace(/\D/g, ''); // keep digits only
-  } else {
-    const m = text.match(/ATS\s*ID[:\s]+([^\n]{1,20})/i);
-    if (m) result.atsId = m[1].replace(/\D/g, '');
+/** Extract a digit sequence that follows a label (for ID fields). */
+function extractIdAfterLabel(text, labelPattern) {
+  const re1 = new RegExp(
+    `\\b${labelPattern}\\s*[:\\-|#.]*\\s*([A-Za-z0-9][^\\n|\\t]{1,40}?)(?:\\s{2,}|\\s*[|]|\\s*\\n|$)`,
+    'i'
+  );
+  const re2 = new RegExp(
+    `\\b${labelPattern}\\s*[:\\-|#.]*\\s*\\n+\\s*([A-Za-z0-9][^\\n]{1,40})`,
+    'i'
+  );
+  for (const re of [re1, re2]) {
+    const m = text.match(re);
+    if (m) {
+      const digits = m[1].replace(/\D/g, '');
+      if (digits.length >= 4) return digits;
+    }
+  }
+  return '';
+}
+
+function parseOcrText(text) {
+  const result = {
+    learnerName: '', rawLearnerName: '',
+    atsId: '', courseCode: '',
+    criteriaType: '', criteriaStart: '', criteriaEnd: '',
+  };
+
+  // ── Name: try labels in priority order ──────────────────────
+  // More specific labels first; generic "Name" last as fallback.
+  const NAME_LABELS = [
+    'Learner\\s+Name',
+    'Student\\s+Name',
+    'Staff\\s+Name',
+    'Employee\\s+Name',
+    'Full\\s+Name',
+    'Your\\s+Name',
+    'Candidate\\s+Name',
+    'Trainee\\s+Name',
+    // Generic: any single word before "Name" that isn't a bad prefix
+    '(?!Course|Assessment|Subject|Unit|Program|Task|Module|Outcome|Criteria|Milestone)\\w+\\s+Name',
+    // Last resort: standalone "Name" label
+    'Name',
+  ];
+
+  for (const label of NAME_LABELS) {
+    const found = extractAfterLabel(text, label);
+    if (!found) continue;
+    result.rawLearnerName = found.raw;
+    // Reject if the extracted value itself looks like a form label
+    if (!FORM_LABEL_RE.test(found.value)) {
+      result.learnerName = found.value;
+      break;
+    }
+    // Otherwise keep rawLearnerName for debug but continue searching
+  }
+  if (!result.rawLearnerName) {
+    result.rawLearnerName = '(no name label found in OCR text)';
+  }
+
+  // ── ID: try labels in priority order ────────────────────────
+  const ID_LABELS = [
+    'ATS\\s+(?:ID|No\\.?)',
+    'Student\\s+(?:ID|No\\.?)',
+    'Staff\\s+(?:ID|No\\.?)',
+    'Employee\\s+(?:ID|No\\.?)',
+    'Trainee\\s+(?:ID|No\\.?)',
+    'Learner\\s+(?:ID|No\\.?)',
+    'ID\\s*(?:No\\.?|Number)',
+    'Emirates\\s+ID',
+    'Ref(?:erence)?\\s*(?:ID|No\\.?)',
+    '(?<!Course\\s)(?<!Staff\\s)ID',  // standalone ID not preceded by Course/Staff
+  ];
+
+  for (const label of ID_LABELS) {
+    const found = extractIdAfterLabel(text, label);
+    if (found) { result.atsId = found; break; }
   }
 
   // ── Course Code ── e.g. ENE61, EEE61, ETE61
