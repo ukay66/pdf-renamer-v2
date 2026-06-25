@@ -159,157 +159,73 @@ function updateStartBtn() {
       ? ` · ${state.students.length} roster entries`
       : needsRoster() ? '' : ' · no roster needed';
     btn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    Start OCR Processing (${state.pdfFiles.length} files${rosterInfo})`;
+    Match Files (${state.pdfFiles.length} files${rosterInfo})`;
   }
 }
 
 
 
 // ─────────────────────────────────────────────────────────────
-// STEP 2 — OCR PIPELINE
+// STEP 2 — FILENAME → ROSTER MATCHING (no OCR)
 // ─────────────────────────────────────────────────────────────
+// OCR was unreliable (failed ~80% of the time on grey-cell labels).
+// The filename already contains the student's name, which is a reliable
+// source. Matching filename against the roster is fast and accurate.
 async function startProcessing() {
   showStep(2);
-  addLog('Initialising Tesseract OCR engine…', 'ok');
+
+  const hasRoster = state.students.length > 0;
+  addLog(hasRoster
+    ? `Matching ${state.pdfFiles.length} filenames against ${state.students.length} roster entries…`
+    : `Processing ${state.pdfFiles.length} files (no roster — template uses Fixed Template only)…`,
+    'ok');
 
   try {
-    addLog('Loading PDF renderer…', 'ok');
-    await initPdfJs();
-    addLog('PDF renderer ready ✓', 'ok');
-
-    // Verify Tesseract UMD global is available
-    if (typeof Tesseract === 'undefined') {
-      throw new Error('Tesseract global not found — lib/tesseract.min.js may have failed to load');
-    }
-    addLog('Tesseract global found ✓', 'ok');
-
-    const workerPath = chrome.runtime.getURL('lib/worker.min.js');
-    const corePath   = chrome.runtime.getURL('lib/');
-    const langPath   = chrome.runtime.getURL('lib'); // bundled locally — works fully offline
-
-    addLog(`Worker: ${workerPath}`, 'ok');
-
-    // ── Worker constructor intercept ────────────────────────────
-    // Tesseract v7 does: new Worker(URL.createObjectURL(blob))
-    // where the blob contains: importScripts('chrome-extension://...lib/worker.min.js')
-    // Blob-URL workers cannot importScripts from chrome-extension:// origins.
-    // Fix: when Tesseract creates a blob: URL worker, swap it for the extension URL directly.
-    const _OrigWorker = window.Worker;
-    window.Worker = function(url, opts) {
-      return new _OrigWorker(
-        (typeof url === 'string' && url.startsWith('blob:')) ? workerPath : url,
-        opts
-      );
-    };
-    window.Worker.prototype = _OrigWorker.prototype;
-
-    try {
-      state.tesseractWorker = await Tesseract.createWorker('eng', Tesseract.OEM?.LSTM_ONLY ?? 1, {
-        workerPath,
-        corePath,
-        langPath,
-        logger: m => {
-          if (m.status === 'loading tesseract core') updateProgress(null, 'Loading OCR engine…');
-          if (m.status === 'loading language traineddata') updateProgress(null, 'Downloading English language model (~10 MB, first run only)…');
-          if (m.status === 'initializing api') updateProgress(null, 'Initialising OCR API…');
-        },
-      });
-    } finally {
-      window.Worker = _OrigWorker; // restore regardless of success/failure
-    }
-
-    addLog('OCR engine ready ✓', 'ok');
-
-    const hasReference = state.students.length > 0;
-    addLog(hasReference
-      ? `Reference file loaded — will cross-check against ${state.students.length} entries.`
-      : 'No reference file — using OCR-extracted name and ID directly.', 'ok');
-
-    // ── Debug: show full OCR output from file 1 so we can see what Tesseract reads ──
-    addLog('Scanning first file to show raw OCR output…', 'ok');
-    try {
-      const debugOcr = await ocrFirstPage(state.pdfFiles[0].handle);
-      addLog('── FULL OCR TEXT (file 1) ──', 'warn');
-      // Show in chunks of 150 chars
-      const flat = debugOcr.replace(/\n/g, ' ↵ ');
-      for (let c = 0; c < Math.min(flat.length, 600); c += 150) {
-        addLog(flat.slice(c, c + 150), 'warn');
-      }
-      addLog('── END OCR TEXT ──', 'warn');
-    } catch (e) {
-      addLog('Debug OCR failed: ' + e.message, 'err');
-    }
-
     state.results = [];
 
     for (let i = 0; i < state.pdfFiles.length; i++) {
       const pdf = state.pdfFiles[i];
-      const pct = Math.round((i / state.pdfFiles.length) * 100);
-      updateProgress(pct, `Processing ${i + 1} of ${state.pdfFiles.length}: ${pdf.name}`);
+      updateProgress(
+        Math.round((i / state.pdfFiles.length) * 100),
+        `Matching ${i + 1} of ${state.pdfFiles.length}: ${pdf.name}`
+      );
 
-      try {
-        const ocr    = await ocrFirstPage(pdf.handle);
-        const parsed = parseOcrText(ocr);
-        const filenameHint = extractNameFromFilename(pdf.name);
+      const filenameHint = extractNameFromFilename(pdf.name);
+      const parsed = { learnerName: '', rawLearnerName: '', atsId: '', courseCode: '', criteriaType: '', criteriaStart: '', criteriaEnd: '' };
 
-        let match;
-        if (hasReference) {
-          // Cross-check OCR'd name against the reference file
-          match = matchStudent(parsed.learnerName, filenameHint, parsed.atsId, state.students);
-        } else {
-          // No reference — use OCR'd values directly
-          match = {
-            status: 'extracted',
-            student: null,
-            ocrName: parsed.learnerName,
-            ocrId:   parsed.atsId,
-            confidence: parsed.learnerName ? 1 : 0,
-            candidates: [],
-          };
-        }
-
-        const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name);
-        state.results.push({ pdf, parsed, filenameHint, match, newName, selected: true });
-
-        const statusText = match.status === 'matched'    ? '✓ matched'
-          : match.status === 'extracted'                 ? '→ extracted'
-          : match.status === 'low-confidence'            ? '⚠ low confidence'
-          : '✗ needs review';
-        const logClass = (match.status === 'matched' || match.status === 'extracted') ? 'ok'
-          : match.status === 'low-confidence' ? 'warn' : 'err';
-        addLog(`[${i + 1}/${state.pdfFiles.length}] ${pdf.name} → ${statusText}`, logClass);
-        // Debug: show what OCR actually read from the Learner Name field
-        const rawOcr = parsed.rawLearnerName || '—';
-        const usedName = parsed.learnerName || `(fallback: ${filenameHint})`;
-        addLog(`  OCR raw: "${rawOcr}" → used: "${usedName}"`,
-          parsed.learnerName ? 'ok' : 'warn');
-
-      } catch (e) {
-        addLog(`[${i + 1}/${state.pdfFiles.length}] ${pdf.name} → ERROR: ${e.message}`, 'err');
-        state.results.push({
-          pdf, parsed: {}, filenameHint: extractNameFromFilename(pdf.name),
-          match: { status: 'error', candidates: state.students.slice(0, 3) },
-          newName: buildFilenameFromTemplate({}, null, '', pdf.name), selected: false,
-        });
+      let match;
+      if (hasRoster && filenameHint) {
+        // Compare filename name against roster — no OCR needed
+        match = matchStudent('', filenameHint, '', state.students);
+      } else if (!filenameHint) {
+        match = { status: 'unreadable', student: null, confidence: 0, candidates: state.students.slice(0, 5) };
+      } else {
+        // No roster: use filename directly (for Fixed Template-only setups)
+        match = { status: 'extracted', student: null, confidence: 1, candidates: [] };
       }
+
+      const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name);
+      state.results.push({ pdf, parsed, filenameHint, match, newName, selected: !!match.student || match.status === 'extracted' });
+
+      const conf = Math.round((match.confidence || 0) * 100);
+      const statusText = match.status === 'matched'        ? `✓ matched (${conf}%)`
+        : match.status === 'extracted'                     ? '→ no roster'
+        : match.status === 'low-confidence'                ? `⚠ low confidence (${conf}%)`
+        : '✗ needs review';
+      addLog(`[${i + 1}/${state.pdfFiles.length}] ${pdf.name} → ${statusText}`,
+        match.status === 'matched' ? 'ok' : match.status === 'low-confidence' ? 'warn' : 'err');
     }
 
-    updateProgress(100, 'Processing complete!');
-    await state.tesseractWorker.terminate();
-    state.tesseractWorker = null;
-    addLog('All PDFs processed. Building results…', 'ok');
+    updateProgress(100, 'Matching complete!');
+    addLog(`Done — ${state.results.filter(r => r.match.status === 'matched').length} matched, ` +
+      `${state.results.filter(r => r.match.status === 'low-confidence').length} low-confidence, ` +
+      `${state.results.filter(r => !['matched','low-confidence','extracted'].includes(r.match.status)).length} need review.`, 'ok');
 
-    setTimeout(() => {
-      buildResultsTable();
-      showStep(3);
-    }, 600);
+    setTimeout(() => { buildResultsTable(); showStep(3); }, 300);
 
   } catch (e) {
-    const msg = (e instanceof Error)
-      ? (e.message || e.toString())
-      : (typeof e === 'string' ? e : JSON.stringify(e) ?? String(e));
-    addLog('Fatal error: ' + msg, 'err');
-    if (e?.stack) addLog(e.stack.split('\n').slice(0,3).join(' | '), 'err');
+    const msg = e instanceof Error ? e.message : String(e);
+    addLog('Error: ' + msg, 'err');
     console.error('startProcessing error:', e);
   }
 };
@@ -988,21 +904,23 @@ function matchStudent(ocrName, filenameHint, ocrId, students) {
   const second = merged[1];
   const gap    = second ? top.score - second.score : 1;
 
-  // ── 3-way validation at 70%: OCR name + filename + roster all agree ──
-  // When BOTH OCR name and filename match the same roster entry at ≥70%,
-  // that is a high-confidence confirmed match regardless of gap.
-  if (top.ocrScore >= 0.7 && top.fnScore >= 0.7) {
-    return { status: 'matched', student: top.student, confidence: Math.min(top.ocrScore, top.fnScore), candidates: [] };
-  }
+  // ── Filename-vs-roster matching at 50% threshold ────────────
+  // OCR is no longer used. Matching is filename name vs roster only.
+  // User-confirmed threshold: confidence ≥ 50% = matched.
 
-  // ── Stage 1: Either source alone at ≥70% with clear gap ──
-  if (top.score >= 0.7 && gap >= 0.15) {
+  // Clear winner: ≥50% with meaningful gap over next candidate
+  if (top.score >= 0.5 && gap >= 0.15) {
     return { status: 'matched', student: top.student, confidence: top.score, candidates: [] };
   }
 
-  // ── Medium confidence: ≥50% with gap ──
-  if (top.score >= 0.5 && gap >= 0.2) {
+  // Good match but gap is narrow (two similar names in roster)
+  if (top.score >= 0.5) {
     return { status: 'low-confidence', student: top.student, confidence: top.score, candidates: merged.slice(0, 3) };
+  }
+
+  // Below threshold but not zero — flag for manual review
+  if (top.score >= 0.2) {
+    return { status: 'low-confidence', student: top.student, confidence: top.score, candidates: merged.slice(0, 5) };
   }
 
   // ── Too low to work with ──
