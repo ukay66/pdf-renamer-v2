@@ -194,6 +194,17 @@ async function startProcessing() {
       const filenameHint = extractNameFromFilename(pdf.name);
       const parsed = { learnerName: '', rawLearnerName: '', atsId: '', courseCode: '', criteriaType: '', criteriaStart: '', criteriaEnd: '' };
 
+      // Extract file metadata automatically — fast, no OCR
+      const fileMeta = {};
+      try {
+        const f = await pdf.handle.getFile();
+        if (f.lastModified) {
+          fileMeta.modified = new Date(f.lastModified).toISOString().slice(0, 10);
+        }
+        const pdfM = await extractPdfMetadata(pdf.handle);
+        Object.assign(fileMeta, pdfM); // created, title, author, subject
+      } catch (_) {}
+
       let match;
       if (hasRoster && filenameHint) {
         // Compare filename name against roster — no OCR needed
@@ -205,8 +216,8 @@ async function startProcessing() {
         match = { status: 'extracted', student: null, confidence: 1, candidates: [] };
       }
 
-      const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name, i + 1);
-      state.results.push({ pdf, parsed, filenameHint, match, newName, selected: !!match.student || match.status === 'extracted' });
+      const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name, i + 1, fileMeta);
+      state.results.push({ pdf, parsed, filenameHint, fileMeta, match, newName, selected: !!match.student || match.status === 'extracted' });
 
       const conf = Math.round((match.confidence || 0) * 100);
       const statusText = match.status === 'matched'        ? `✓ matched (${conf}%)`
@@ -769,33 +780,35 @@ function showScanResults(fileName, results) {
     container.appendChild(row);
   }
 
-  let hasContent = false;
+  // PDF metadata is now extracted automatically per-file — show it here as info only
+  const metaNote = document.createElement('div');
+  metaNote.style.cssText = 'padding:8px 14px;font-size:11px;color:var(--gray-400);background:var(--gray-50);border-bottom:1px solid var(--gray-100);';
+  const metaItems = Object.entries(pdfMeta).filter(([,v]) => v);
+  metaNote.textContent = metaItems.length
+    ? `ℹ️ PDF metadata auto-extracted: ${metaItems.map(([k,v])=>`{${k}}=${v}`).join(' · ')} — use {created}, {title} etc. in your pattern without scanning.`
+    : 'ℹ️ No PDF metadata found in this file. Metadata tokens ({created}, {title}) will be empty for this file.';
+  container.appendChild(metaNote);
 
-  // PDF Metadata section
-  let pdfFirst = true;
-  for (const [key, val] of Object.entries(pdfMeta)) {
-    addRow(pdfFirst ? '📄 PDF Metadata' : null, key, val, `pdf-${key}`, null);
-    pdfFirst = false;
-    hasContent = true;
-  }
-
-  // OCR-extracted fields
-  let ocrFirst = true;
+  // OCR-extracted text fields
   const ocrFields = [
     ['Learner Name', parsed.learnerName, 'learner-name', 'name'],
     ['ATS ID',       parsed.atsId,       'ats-id',       'id'],
     ['Course Code',  parsed.courseCode,   'course-code',  null],
   ];
+  let hasOcr = false;
+  let ocrFirst = true;
   for (const [label, val, tkey, mapTo] of ocrFields) {
     if (!val) continue;
-    addRow(ocrFirst ? '📝 First Page Text (OCR)' : null, label, val, tkey, mapTo);
+    addRow(ocrFirst ? '📝 Text found on first page' : null, label, val, tkey, mapTo);
     ocrFirst = false;
-    hasContent = true;
+    hasOcr = true;
   }
 
-  if (!hasContent) {
-    container.innerHTML = `<div style="padding:14px;color:var(--gray-400);font-size:12px;">
-      No metadata or text fields found in this file.</div>`;
+  if (!hasOcr) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'padding:12px 14px;color:var(--gray-400);font-size:12px;';
+    msg.textContent = 'No readable text fields found on the first page.';
+    container.appendChild(msg);
   }
 
   document.getElementById('scan-results').classList.remove('hidden');
@@ -836,27 +849,33 @@ function insertDiscoveredToken(tokenKey, value, label) {
   }
 }
 
-function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '', count = 0) {
-  const hasRoster = state.students.length > 0;
+function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '', count = 0, fileMeta = {}) {
+  const hasRoster  = state.students.length > 0;
   const extWithDot = fileExtension(originalName) || '.pdf';
-  const ext        = extWithDot.slice(1); // without dot: "pdf", "docx"
+  const ext        = extWithDot.slice(1);
   const today      = new Date().toISOString().slice(0, 10);
 
   const values = {
     name:     hasRoster ? (student?.name  || 'UNKNOWN') : (parsed?.learnerName || filenameHint || 'UNKNOWN'),
     id:       hasRoster ? (student?.atsId || 'UNKNOWN') : (parsed?.atsId || 'UNKNOWN'),
-    ext:      ext,
-    filetype: ext,                                             // alias
+    ext,
+    filetype: ext,
     date:     today,
     year:     today.slice(0, 4),
     month:    today.slice(5, 7),
     day:      today.slice(8, 10),
-    filename: (originalName || '').replace(/\.[^.]+$/, ''),   // no extension
-    count:    String(count).padStart(3, '0'),                  // 001, 002, 003
-    index:    String(count).padStart(3, '0'),                  // alias for count
+    filename: (originalName || '').replace(/\.[^.]+$/, ''),
+    count:    String(count).padStart(3, '0'),
+    index:    String(count).padStart(3, '0'),
+    // Per-file metadata — populated automatically, no scan needed
+    created:  fileMeta.created  || '',
+    modified: fileMeta.modified || '',
+    title:    fileMeta.title    || '',
+    author:   fileMeta.author   || '',
+    subject:  fileMeta.subject  || '',
   };
 
-  // Merge built-in values with any discovered custom tokens
+  // Merge with OCR-discovered custom tokens (from Scan button)
   const allValues = { ...values, ...state.customTokens };
 
   let result = (state.template.pattern || '').trim();
@@ -1375,7 +1394,7 @@ function handleManualAssign(select) {
   r.match.student = student;
   r.match.status  = 'low-confidence';
   const p = r.parsed;
-  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint, r.pdf.name, idx + 1);
+  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint, r.pdf.name, idx + 1, r.fileMeta || {});
   r.selected = true;
 
   // Update the row cells without full re-render
@@ -1484,7 +1503,7 @@ function downloadCSV() {
 function reapplyTemplate() {
   if (state.results.length === 0) return;
   state.results.forEach((r, i) => {
-    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint, r.pdf.name, i + 1);
+    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint, r.pdf.name, i + 1, r.fileMeta || {});
     r.selected = true;
   });
   buildResultsTable();
@@ -1562,6 +1581,8 @@ const PREVIEW_SAMPLES = {
   name: 'Aysha Abdulla', id: '571883', ext: 'pdf', filetype: 'pdf',
   date: '2026-06-26', year: '2026', month: '06', day: '26',
   filename: 'Milestone 1 - Aysha', count: '001', index: '001',
+  created: '2026-03-15', modified: '2026-06-22',
+  title: 'Assignment Milestone 1', author: '', subject: '',
 };
 
 function saveTemplate() {
@@ -1703,7 +1724,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!state.pdfFiles.length) return;
     const btn   = document.getElementById('scan-btn');
     const label = document.getElementById('scan-btn-label');
-    label.textContent = 'Scanning…';
+    label.textContent = 'Scanning with OCR…';
     btn.disabled = true;
     try {
       const sample  = state.pdfFiles[0]; // use first file as sample
@@ -1712,7 +1733,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       label.textContent = 'Scan failed — ' + e.message;
     } finally {
-      label.textContent = 'Scan a file to discover content fields';
+      label.textContent = 'Scan text content in a file (OCR)';
       btn.disabled = false;
     }
   });

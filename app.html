@@ -546,12 +546,16 @@
         <option value="{name}">  {name}      — Matched name from the roster file</option>
         <option value="{id}">    {id}        — Matched ID number from the roster file</option>
         <option value="{ext}">   {ext}       — Original file extension (pdf, docx, jpg…)</option>
-        <option value="{date}">  {date}      — Today's date in YYYY-MM-DD format</option>
-        <option value="{year}">  {year}      — Current year (e.g. 2026)</option>
-        <option value="{month}"> {month}     — Current month number (e.g. 06)</option>
-        <option value="{day}">   {day}       — Current day number (e.g. 25)</option>
-        <option value="{filename}">{filename} — Original filename without its extension</option>
-        <option value="{count}"> {count}     — Auto-incremental file counter: 001, 002, 003…</option>
+        <option value="{date}">     {date}     — Today's date in YYYY-MM-DD format</option>
+        <option value="{year}">     {year}     — Current year (e.g. 2026)</option>
+        <option value="{month}">    {month}    — Current month number (e.g. 06)</option>
+        <option value="{day}">      {day}      — Current day number (e.g. 25)</option>
+        <option value="{filename}"> {filename} — Original filename without its extension</option>
+        <option value="{count}">    {count}    — Auto-incremental file counter: 001, 002, 003…</option>
+        <option value="{created}">  {created}  — File creation date from PDF metadata (YYYY-MM-DD)</option>
+        <option value="{modified}"> {modified} — File last-modified date (YYYY-MM-DD)</option>
+        <option value="{title}">    {title}    — Document title from PDF metadata (if available)</option>
+        <option value="{author}">   {author}   — Document author from PDF metadata (if available)</option>
       </select>
     </div>
 
@@ -570,7 +574,7 @@
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <span id="scan-btn-label">Scan a file to discover content fields</span>
+        <span id="scan-btn-label">Scan text content in a file (OCR)</span>
       </button>
 
       <!-- Results panel — hidden until scan runs -->
