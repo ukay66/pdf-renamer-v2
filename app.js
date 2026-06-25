@@ -238,6 +238,11 @@ async function startProcessing() {
         const logClass = (match.status === 'matched' || match.status === 'extracted') ? 'ok'
           : match.status === 'low-confidence' ? 'warn' : 'err';
         addLog(`[${i + 1}/${state.pdfFiles.length}] ${pdf.name} → ${statusText}`, logClass);
+        // Debug: show what OCR actually read from the Learner Name field
+        const rawOcr = parsed.rawLearnerName || '—';
+        const usedName = parsed.learnerName || `(fallback: ${filenameHint})`;
+        addLog(`  OCR raw: "${rawOcr}" → used: "${usedName}"`,
+          parsed.learnerName ? 'ok' : 'warn');
 
       } catch (e) {
         addLog(`[${i + 1}/${state.pdfFiles.length}] ${pdf.name} → ERROR: ${e.message}`, 'err');
@@ -334,14 +339,17 @@ function parseOcrText(text) {
   const nameLineMatch = text.match(/Learner\s*Name\s+([A-Za-z][^\n|]{2,40}?)(?:\s{2,}|\s+Course|\s+\|)/i);
   if (nameLineMatch) {
     const candidate = nameLineMatch[1].trim();
+    result.rawLearnerName = candidate; // keep raw for debug
     result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
   } else {
     const m = text.match(/Learner\s*Name[:\s]+([A-Za-z][^\n]{2,40})/i);
     if (m) {
       const candidate = m[1].trim().replace(/\s*Course.*$/i, '').trim();
+      result.rawLearnerName = candidate;
       result.learnerName = FORM_LABELS.test(candidate) ? '' : candidate;
     }
   }
+  if (!result.rawLearnerName) result.rawLearnerName = '(not found near "Learner Name" label)';
 
   // ── ATS ID ──
   // Pattern: "ATS ID [digits+noise] Subject" — extract digit sequence
@@ -825,14 +833,19 @@ function buildResultsTable() {
       : '<span style="color:var(--gray-400);font-size:12px;">— pending assignment —</span>';
 
     // OCR name + filename hint
-    const ocrDisplay = r.parsed.learnerName
-      ? escHtml(r.parsed.learnerName)
+    const rawOcr   = r.parsed.rawLearnerName || '';
+    const ocrName  = r.parsed.learnerName || '';
+    const ocrTip   = rawOcr
+      ? `OCR raw: "${rawOcr}"${!ocrName ? ' → rejected as form label, using filename' : ''}`
+      : 'OCR did not find text near "Learner Name" label';
+    const ocrDisplay = ocrName
+      ? escHtml(ocrName)
       : `<em style="color:var(--gray-400)">${escHtml(r.filenameHint || 'not read')}</em>`;
 
     tr.innerHTML = `
       <td><input type="checkbox" class="cb row-cb" data-idx="${idx}" ${r.selected ? 'checked' : ''}></td>
       <td><div class="filename-cell truncate" title="${escHtml(r.pdf.name)}">${escHtml(r.pdf.name)}</div></td>
-      <td><div class="ocr-name-cell" title="${escHtml(r.parsed.learnerName || '')}">${ocrDisplay}</div></td>
+      <td><div class="ocr-name-cell" title="${escHtml(ocrTip)}" style="cursor:help;">${ocrDisplay}</div></td>
       <td>${studentCell}</td>
       <td style="font-size:12px;color:var(--gray-600);font-family:monospace;">${escHtml((r.match.student || currentStudent)?.atsId || '—')}</td>
       <td>
