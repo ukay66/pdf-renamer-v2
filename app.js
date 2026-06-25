@@ -159,7 +159,7 @@ function updateStartBtn() {
       ? ` · ${state.students.length} roster entries`
       : needsRoster() ? '' : ' · no roster needed';
     btn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    Match Files (${state.pdfFiles.length} files${rosterInfo})`;
+    Start Renaming (${state.pdfFiles.length} files${rosterInfo})`;
   }
 }
 
@@ -1316,7 +1316,7 @@ function reapplyTemplate() {
   showStep(3);
   // Restore the normal start button for future use
   const btn = document.getElementById('start-btn');
-  btn.textContent = 'Start OCR Processing';
+  btn.textContent = 'Start Renaming';
   btn.onclick = null; // DOMContentLoaded listener still handles it via addEventListener
 }
 
@@ -1345,7 +1345,7 @@ function restart() {
   document.getElementById('zone-excel').querySelector('p').textContent = 'Upload a .xlsx/.csv with names and IDs to cross-check against file content';
   document.getElementById('ocr-log').innerHTML = '';
   document.getElementById('start-btn').disabled = true;
-  document.getElementById('start-btn').innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Start OCR Processing`;
+  document.getElementById('start-btn').innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Start Renaming`;
 
   // Reset template UI
   ['slot-1', 'slot-2', 'slot-3'].forEach(id => {
@@ -1359,6 +1359,8 @@ function restart() {
     if (el) { el.value = ''; el.classList.add('hidden'); }
   });
   updatePreview();
+  updateExcelZoneBadge();  // reset badge to Optional (slots are all null after restart)
+  updateStartBtn();         // ensure start button is disabled until folder is re-selected
 
   showStep(1);
 };
