@@ -1415,40 +1415,31 @@ const SEP_IDS    = ['sep-underscore', 'sep-hyphen', 'sep-space', 'sep-none'];
 const STORAGE_KEY = 'filerenamer_template';
 
 function saveTemplate() {
+  // Only save the fixed template texts — not slot selections or separator.
+  // Slot choices (Name, ID) are not saved because restoring them would make
+  // the roster file appear Required on next open before the user sets anything.
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      slots:      state.template.slots,
-      separator:  state.template.separator,
       fixedTexts: state.template.fixedTexts,
     }));
   } catch (_) {}
 }
 
 function loadTemplate() {
+  // Only restore the previously typed fixed template texts.
+  // Slots and separator always start fresh (empty / underscore).
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const t = JSON.parse(raw);
-    state.template.slots      = t.slots      || [null, null, null];
-    state.template.separator  = t.separator  ?? '_';
-    state.template.fixedTexts = t.fixedTexts || ['', '', ''];
-    // Restore slot selects
-    ['slot-1','slot-2','slot-3'].forEach((id, i) => {
-      const el = document.getElementById(id);
-      if (el) el.value = state.template.slots[i] || '';
-    });
-    // Restore separator active state
-    const SEP_MAP = {'_':'sep-underscore','-':'sep-hyphen',' ':'sep-space','':'sep-none'};
-    const activeSep = SEP_MAP[state.template.separator] || 'sep-underscore';
-    SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
-    document.getElementById(activeSep)?.classList.add('active');
-    // Restore fixed text inputs
-    state.template.fixedTexts.forEach((txt, i) => {
-      const el = document.getElementById(`fixed-text-${i + 1}`);
-      if (el) el.value = txt || '';
-    });
-    updateSlotOptions();
-    updatePreview();
+    if (Array.isArray(t.fixedTexts)) {
+      state.template.fixedTexts = t.fixedTexts;
+      // Pre-fill the inputs so the text is ready when the user selects Fixed Template
+      t.fixedTexts.forEach((txt, i) => {
+        const el = document.getElementById(`fixed-text-${i + 1}`);
+        if (el && txt) el.value = txt;
+      });
+    }
   } catch (_) {}
 }
 const SEP_DISPLAY = { '_': '_', '-': '-', ' ': '·', '': '∅' };
@@ -1511,7 +1502,7 @@ function initTemplateUI() {
       updatePreview();
       updateExcelZoneBadge();
       updateStartBtn();
-      saveTemplate();
+      // Note: slot selections are intentionally NOT saved to localStorage
     });
     // Per-slot fixed text
     const fixedInput = document.getElementById(`fixed-text-${idx + 1}`);
@@ -1524,7 +1515,7 @@ function initTemplateUI() {
     }
   });
 
-  // Separator buttons (underscore, hyphen, space, none)
+  // Separator buttons — not saved to localStorage
   SEP_IDS.forEach(btnId => {
     const btn = document.getElementById(btnId);
     if (!btn) return;
@@ -1533,7 +1524,6 @@ function initTemplateUI() {
       SEP_IDS.forEach(id => document.getElementById(id)?.classList.remove('active'));
       btn.classList.add('active');
       updatePreview();
-      saveTemplate();
     });
   });
 
