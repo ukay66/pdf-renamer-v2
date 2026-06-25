@@ -228,7 +228,7 @@ async function startProcessing() {
           };
         }
 
-        const newName = buildFilenameFromTemplate(parsed, match.student);
+        const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint);
         state.results.push({ pdf, parsed, filenameHint, match, newName, selected: true });
 
         const statusText = match.status === 'matched'    ? '✓ matched'
@@ -406,12 +406,14 @@ function extractNameFromFilename(filename) {
   return m ? m[1].trim().replace(/\s+/g, ' ') : '';
 }
 
-function buildFilenameFromTemplate(parsed, student) {
+function buildFilenameFromTemplate(parsed, student, filenameHint = '') {
   const { slots, separator, fixedText } = state.template;
+  // Name priority: matched Excel name → OCR-extracted name → filename hint → UNKNOWN
+  // ID priority:   matched Excel ID   → OCR-extracted ID   → UNKNOWN
   const parts = slots
     .filter(s => s)
     .map(slot => {
-      if (slot === 'Name')          return student?.name || parsed?.learnerName || 'UNKNOWN';
+      if (slot === 'Name')          return student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN';
       if (slot === 'ID')            return student?.atsId  || parsed?.atsId  || 'UNKNOWN';
       if (slot === 'FixedTemplate') return (fixedText || '').trim() || 'FIXED';
       return '';
@@ -903,7 +905,7 @@ function handleManualAssign(select) {
   r.match.student = student;
   r.match.status  = 'low-confidence';
   const p = r.parsed;
-  r.newName = buildFilenameFromTemplate(p, student);
+  r.newName = buildFilenameFromTemplate(p, student, r.filenameHint);
   r.selected = true;
 
   // Update the row cells without full re-render
@@ -1016,7 +1018,7 @@ function downloadCSV() {
 function reapplyTemplate() {
   if (state.results.length === 0) return;
   state.results.forEach(r => {
-    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student);
+    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student, r.filenameHint);
     r.selected = true;
   });
   buildResultsTable();
