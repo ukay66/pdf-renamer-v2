@@ -792,22 +792,39 @@ function digitOverlap(ocrDigits, excelId) {
 }
 
 function scoreAgainstExcel(nameStr, students) {
-  const ocrLastName = getLastName(nameStr); // last meaningful token e.g. "alrashdi"
+  const fnTokens    = tokenize(nameStr);         // filename tokens e.g. ["wadima","matar"]
+  const fnTokenSet  = new Set(fnTokens);
+  const ocrLastName = getLastName(nameStr);
 
   return students.map(s => {
+    const excelTokens   = new Set(tokenize(s.name));
     const jaccard       = jaccardTokens(nameStr, s.name);
     const trigram       = trigramJaccard(nameStr, s.name);
     const excelLastName = getLastName(s.name);
 
-    // Last-name similarity — uses consonant skeleton so "Alktebi" ≡ "Alketbi"
+    // ── Subset recall bonus ──────────────────────────────────────
+    // "Wadima Matar" vs "Wadima Matar Salem Mubarak Alkhateri":
+    // All filename tokens exist in the roster name → 100% recall.
+    // Jaccard alone gives only 40% (2/5) which unfairly punishes short filenames.
+    // When all filename words appear in the roster name, the recall is 1.0
+    // and we use that as a strong signal (score ≥ 0.85).
+    const matchedTokens = fnTokens.filter(t => excelTokens.has(t)).length;
+    const recall        = fnTokens.length > 0 ? matchedTokens / fnTokens.length : 0;
+
+    // Last-name similarity (consonant skeleton)
     const lastNameScore = ocrLastName.length >= 3
       ? lastNameSimilarity(ocrLastName, excelLastName)
       : 0;
 
-    // Weights: 50% exact token match + 30% full-name trigram + 20% last-name trigram
-    const score = jaccard * 0.5 + trigram * 0.3 + lastNameScore * 0.2;
+    // Base score: max of (jaccard+trigram weighted) and (recall-based)
+    // Recall-based score is capped at 0.88 to leave room for a better exact match
+    const weightedScore = jaccard * 0.5 + trigram * 0.3 + lastNameScore * 0.2;
+    const recallScore   = recall >= 1.0 ? 0.88        // all words matched → very high
+                        : recall >= 0.5 ? recall * 0.7  // partial → moderate
+                        : 0;
+    const score = Math.max(weightedScore, recallScore);
 
-    return { student: s, score, jaccard, trigram, lastNameScore };
+    return { student: s, score, jaccard, trigram, lastNameScore, recall };
   }).sort((a, b) => b.score - a.score);
 }
 
@@ -1101,20 +1118,16 @@ function buildResultsTable() {
       ? `<span class="new-name-cell">${escHtml(r.newName)}</span>`
       : '<span style="color:var(--gray-400);font-size:12px;">— pending assignment —</span>';
 
-    // OCR name + filename hint
-    const rawOcr   = r.parsed.rawLearnerName || '';
-    const ocrName  = r.parsed.learnerName || '';
-    const ocrTip   = rawOcr
-      ? `OCR raw: "${rawOcr}"${!ocrName ? ' → rejected as form label, using filename' : ''}`
-      : 'OCR did not find text near "Learner Name" label';
-    const ocrDisplay = ocrName
-      ? escHtml(ocrName)
-      : `<em style="color:var(--gray-400)">${escHtml(r.filenameHint || 'not read')}</em>`;
+    // Name extracted from the filename (the matching signal)
+    const fnName    = r.filenameHint || '—';
+    const fnDisplay = fnName !== '—'
+      ? escHtml(fnName)
+      : `<span style="color:var(--gray-400);font-size:11px;">no name in filename</span>`;
 
     tr.innerHTML = `
       <td><input type="checkbox" class="cb row-cb" data-idx="${idx}" ${r.selected ? 'checked' : ''}></td>
       <td><div class="filename-cell truncate" title="${escHtml(r.pdf.name)}">${escHtml(r.pdf.name)}</div></td>
-      <td><div class="ocr-name-cell" title="${escHtml(ocrTip)}" style="cursor:help;">${ocrDisplay}</div></td>
+      <td><div class="ocr-name-cell">${fnDisplay}</div></td>
       <td>${studentCell}</td>
       <td style="font-size:12px;color:var(--gray-600);font-family:monospace;">${escHtml((r.match.student || currentStudent)?.atsId || '—')}</td>
       <td>
@@ -1271,16 +1284,12 @@ async function applyRenaming() {
 function downloadCSV() {
   const report = state.finalReport.length ? state.finalReport : state.results;
   const rows = [
-    ['Original Filename', 'OCR Name Read', 'Filename Hint', 'Matched Student', 'ATS ID', 'Course Code', 'Criteria', 'New Filename', 'Status'],
+    ['Original Filename', 'Name from Filename', 'Matched Student', 'ATS ID', 'New Filename', 'Status'],
     ...report.map(r => [
       r.pdf.name,
-      r.parsed?.learnerName || '',
       r.filenameHint || '',
       r.match?.student?.name || '',
       r.match?.student?.atsId || '',
-      r.parsed?.courseCode || '',
-      r.parsed?.criteriaType && r.parsed?.criteriaStart
-        ? `${r.parsed.criteriaType}${r.parsed.criteriaStart}–${r.parsed.criteriaEnd}` : '',
       r.newName || '',
       r.applyStatus || r.match?.status || '',
     ]),
