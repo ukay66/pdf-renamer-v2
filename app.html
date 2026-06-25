@@ -556,13 +556,34 @@
     </div>
 
     <!-- Live preview -->
-    <div style="background:var(--gray-100);border-radius:8px;padding:12px 14px;border:1px solid var(--gray-200);">
+    <div style="background:var(--gray-100);border-radius:8px;padding:12px 14px;border:1px solid var(--gray-200);margin-bottom:14px;">
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--gray-400);margin-bottom:5px;">Preview</div>
       <div id="preview-filename" style="font-size:15px;font-weight:700;font-family:monospace;color:var(--gray-800);margin-bottom:3px;">—</div>
       <div id="preview-example" style="font-size:11px;color:var(--gray-500);">Type a pattern above to see a preview</div>
     </div>
 
-    <div class="info-note" id="step1-note" style="margin-top:12px;">
+    <!-- Scan a file for discoverable content fields -->
+    <div id="scan-section" class="hidden">
+      <button id="scan-btn" style="padding:8px 16px;background:white;color:var(--gray-600);
+        border:1px solid var(--gray-300);border-radius:8px;font-size:13px;font-weight:500;
+        cursor:pointer;display:flex;align-items:center;gap:7px;transition:all 0.15s;margin-bottom:10px;">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <span id="scan-btn-label">Scan a file to discover content fields</span>
+      </button>
+
+      <!-- Results panel — hidden until scan runs -->
+      <div id="scan-results" class="hidden" style="border:1px solid var(--gray-200);border-radius:10px;overflow:hidden;margin-bottom:4px;">
+        <div style="background:var(--gray-50);padding:10px 14px;border-bottom:1px solid var(--gray-200);
+          font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.06em;">
+          Fields discovered from: <span id="scan-filename" style="color:var(--gray-700);font-weight:600;text-transform:none;"></span>
+        </div>
+        <div id="scan-fields" style="padding:4px 0;"></div>
+      </div>
+    </div>
+
+    <div class="info-note" id="step1-note" style="margin-top:4px;">
       💡 When you click a folder or file, Chrome will show a <strong>permission prompt</strong> — this is a mandatory browser security step and cannot be skipped. Click <strong>Allow</strong> to continue. Matching is instant with no downloads required.
     </div>
 

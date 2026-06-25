@@ -24,6 +24,7 @@ const state = {
   template: {             // renaming template configured by user in Step 1
     pattern: '',          // e.g. "ENE61_GC5.1_5.3_P_{id}.{ext}"
   },
+  customTokens: {},       // tokens discovered by "Scan a file" e.g. { title: 'Milestone 1' }
   finalReport: [],
 };
 
@@ -64,6 +65,8 @@ async function pickFolder() {
     tag.textContent = `${state.pdfFiles.length} files`;
     tag.classList.remove('hidden');
     updateStartBtn();
+    // Reveal the "Scan a file" button now that we have files
+    document.getElementById('scan-section')?.classList.remove('hidden');
   } catch (e) {
     if (e.name !== 'AbortError') alert('Could not open folder: ' + e.message);
   }
@@ -656,6 +659,183 @@ function fileExtension(filename) {
   return m ? m[1].toLowerCase() : '';
 }
 
+// ─────────────────────────────────────────────────────────────
+// SMART SCAN — discover content fields from a sample file
+// ─────────────────────────────────────────────────────────────
+
+// Extract PDF metadata from file headers (fast, no OCR needed)
+async function extractPdfMetadata(fileHandle) {
+  try {
+    await initPdfJs();
+    const file   = await fileHandle.getFile();
+    const buf    = await file.arrayBuffer();
+    const pdf    = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+    const meta   = await pdf.getMetadata();
+    await pdf.destroy();
+    const info   = meta?.info || {};
+    const result = {};
+    if (info.Title)       result.title    = info.Title;
+    if (info.Author)      result.author   = info.Author;
+    if (info.Subject)     result.subject  = info.Subject;
+    if (info.Keywords)    result.keywords = info.Keywords;
+    if (info.CreationDate) {
+      // PDF dates are like "D:20260315120000+04'00'"
+      const m = String(info.CreationDate).match(/D:(\d{4})(\d{2})(\d{2})/);
+      if (m) result.created = `${m[1]}-${m[2]}-${m[3]}`;
+    }
+    return result;
+  } catch (_) { return {}; }
+}
+
+// Orchestrate: PDF metadata + OCR first page → discovered fields
+async function scanSampleFile(fileHandle) {
+  const pdfMeta = await extractPdfMetadata(fileHandle);
+  let   parsed  = {};
+  try {
+    // Reuse existing OCR pipeline (already in codebase)
+    if (!state.tesseractWorker) {
+      // Init Tesseract if not already running
+      const workerPath = chrome.runtime.getURL('lib/worker.min.js');
+      const corePath   = chrome.runtime.getURL('lib/');
+      const langPath   = chrome.runtime.getURL('lib');
+      const _Orig = window.Worker;
+      window.Worker = (url, opts) =>
+        new _Orig((typeof url === 'string' && url.startsWith('blob:')) ? workerPath : url, opts);
+      window.Worker.prototype = _Orig.prototype;
+      try {
+        state.tesseractWorker = await Tesseract.createWorker('eng', Tesseract.OEM?.LSTM_ONLY ?? 1,
+          { workerPath, corePath, langPath });
+      } finally { window.Worker = _Orig; }
+    }
+    const ocrText = await ocrFirstPage(fileHandle);
+    parsed = parseOcrText(ocrText);
+  } catch (_) {}
+
+  return { pdfMeta, parsed };
+}
+
+// Build the discovered-fields panel rows and show them
+function showScanResults(fileName, results) {
+  const { pdfMeta, parsed } = results;
+  const container = document.getElementById('scan-fields');
+  const nameEl    = document.getElementById('scan-filename');
+  if (!container) return;
+  nameEl.textContent = fileName;
+  container.innerHTML = '';
+
+  const rowStyle = `display:flex;align-items:center;gap:10px;padding:8px 14px;
+    border-bottom:1px solid var(--gray-100);font-size:12px;`;
+  const labelStyle = `color:var(--gray-400);min-width:90px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;`;
+  const valStyle   = `flex:1;color:var(--gray-800);font-weight:500;`;
+  const btnStyle   = (col) => `padding:3px 9px;border:none;border-radius:5px;font-size:11px;
+    font-weight:600;cursor:pointer;background:${col};color:white;white-space:nowrap;`;
+
+  // Helper — create one field row
+  function addRow(section, label, value, tokenKey, mapTo) {
+    if (!value || value.length < 2) return;
+    const row = document.createElement('div');
+    row.style.cssText = rowStyle;
+    if (section) {
+      // Section header
+      const hdr = document.createElement('div');
+      hdr.style.cssText = `padding:6px 14px 3px;font-size:10px;font-weight:700;
+        text-transform:uppercase;letter-spacing:0.07em;color:var(--gray-400);
+        background:var(--gray-50);border-bottom:1px solid var(--gray-100);`;
+      hdr.textContent = section;
+      container.appendChild(hdr);
+    }
+    row.innerHTML = `
+      <span style="${labelStyle}">${escHtml(label)}</span>
+      <span style="${valStyle}" title="${escHtml(value)}">${escHtml(value.slice(0, 60))}${value.length > 60 ? '…' : ''}</span>
+    `;
+    // Insert token button
+    const insertBtn = document.createElement('button');
+    insertBtn.textContent = `Insert {${tokenKey}}`;
+    insertBtn.style.cssText = btnStyle('#3b82f6');
+    insertBtn.onclick = () => insertDiscoveredToken(tokenKey, value, value.slice(0,50));
+    row.appendChild(insertBtn);
+    // Map to {name} or {id} button
+    if (mapTo) {
+      const mapBtn = document.createElement('button');
+      mapBtn.textContent = `→ {${mapTo}}`;
+      mapBtn.style.cssText = btnStyle('#22c55e') + 'margin-left:4px;';
+      mapBtn.onclick = () => {
+        state.customTokens[mapTo] = value;
+        mapBtn.textContent = `✓ {${mapTo}} set`;
+        mapBtn.disabled = true;
+      };
+      row.appendChild(mapBtn);
+    }
+    container.appendChild(row);
+  }
+
+  let hasContent = false;
+
+  // PDF Metadata section
+  let pdfFirst = true;
+  for (const [key, val] of Object.entries(pdfMeta)) {
+    addRow(pdfFirst ? '📄 PDF Metadata' : null, key, val, `pdf-${key}`, null);
+    pdfFirst = false;
+    hasContent = true;
+  }
+
+  // OCR-extracted fields
+  let ocrFirst = true;
+  const ocrFields = [
+    ['Learner Name', parsed.learnerName, 'learner-name', 'name'],
+    ['ATS ID',       parsed.atsId,       'ats-id',       'id'],
+    ['Course Code',  parsed.courseCode,   'course-code',  null],
+  ];
+  for (const [label, val, tkey, mapTo] of ocrFields) {
+    if (!val) continue;
+    addRow(ocrFirst ? '📝 First Page Text (OCR)' : null, label, val, tkey, mapTo);
+    ocrFirst = false;
+    hasContent = true;
+  }
+
+  if (!hasContent) {
+    container.innerHTML = `<div style="padding:14px;color:var(--gray-400);font-size:12px;">
+      No metadata or text fields found in this file.</div>`;
+  }
+
+  document.getElementById('scan-results').classList.remove('hidden');
+}
+
+// Insert a discovered token into the pattern and add it to the dropdown
+function insertDiscoveredToken(tokenKey, value, label) {
+  state.customTokens[tokenKey] = value;
+
+  // Insert token in pattern input
+  const input = document.getElementById('template-pattern');
+  if (input) {
+    const pos = input.selectionStart ?? input.value.length;
+    const tok = `{${tokenKey}}`;
+    input.value = input.value.slice(0, pos) + tok + input.value.slice(pos);
+    state.template.pattern = input.value;
+    input.focus();
+    updatePreview();
+    updateExcelZoneBadge();
+    updateStartBtn();
+    saveTemplate();
+  }
+
+  // Add to dropdown if not already there
+  const sel = document.getElementById('token-insert-select');
+  if (sel && !sel.querySelector(`option[value="{${tokenKey}}"]`)) {
+    // Find or create the "Discovered" optgroup
+    let grp = sel.querySelector('optgroup[label="Discovered from your files"]');
+    if (!grp) {
+      grp = document.createElement('optgroup');
+      grp.label = 'Discovered from your files';
+      sel.appendChild(grp);
+    }
+    const opt = document.createElement('option');
+    opt.value = `{${tokenKey}}`;
+    opt.textContent = `{${tokenKey}} — ${label}`;
+    grp.appendChild(opt);
+  }
+}
+
 function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '', count = 0) {
   const hasRoster = state.students.length > 0;
   const extWithDot = fileExtension(originalName) || '.pdf';
@@ -676,9 +856,12 @@ function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalN
     index:    String(count).padStart(3, '0'),                  // alias for count
   };
 
+  // Merge built-in values with any discovered custom tokens
+  const allValues = { ...values, ...state.customTokens };
+
   let result = (state.template.pattern || '').trim();
-  for (const [token, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\\{${token}\\}`, 'gi'), value);
+  for (const [token, value] of Object.entries(allValues)) {
+    result = result.replace(new RegExp(`\\{${token}\\}`, 'gi'), String(value));
   }
   return result || 'UNKNOWN' + extWithDot;
 }
@@ -1320,7 +1503,8 @@ function restart() {
   state.pdfFiles   = [];
   state.students   = [];
   state.results    = [];
-  state.template   = { pattern: '' };
+  state.template      = { pattern: '' };
+  state.customTokens  = {};
   state.finalReport = [];
 
   ['zone-pdf', 'zone-excel'].forEach(id => {
@@ -1339,9 +1523,13 @@ function restart() {
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Start Renaming`;
 
-  // Reset template UI — keep saved pattern but clear the input visually
+  // Reset template UI
   const patternEl = document.getElementById('template-pattern');
   if (patternEl) patternEl.value = '';
+  document.getElementById('scan-section')?.classList.add('hidden');
+  document.getElementById('scan-results')?.classList.add('hidden');
+  // Remove discovered optgroup from dropdown
+  document.querySelector('#token-insert-select optgroup[label="Discovered from your files"]')?.remove();
   updatePreview();
   updateExcelZoneBadge();  // reset badge to Optional (slots are all null after restart)
   updateStartBtn();         // ensure start button is disabled until folder is re-selected
@@ -1423,7 +1611,10 @@ function initTemplateUI() {
   const patternInput = document.getElementById('template-pattern');
   const tokenSelect  = document.getElementById('token-insert-select');
 
-  // Pattern text input
+  // Track cursor position — clicking the dropdown steals focus from the input,
+  // resetting selectionStart. We capture it on blur so insertion stays at cursor.
+  let savedCursor = 0;
+
   if (patternInput) {
     patternInput.addEventListener('input', () => {
       state.template.pattern = patternInput.value;
@@ -1437,25 +1628,33 @@ function initTemplateUI() {
     });
     patternInput.addEventListener('blur', () => {
       patternInput.style.borderColor = 'var(--gray-300)';
+      savedCursor = patternInput.selectionStart ?? patternInput.value.length;
+    });
+    patternInput.addEventListener('keyup', () => {
+      savedCursor = patternInput.selectionStart ?? patternInput.value.length;
+    });
+    patternInput.addEventListener('click', () => {
+      savedCursor = patternInput.selectionStart ?? patternInput.value.length;
     });
   }
 
-  // Token insert dropdown — inserts selected token at cursor position
+  // Token insert dropdown — uses savedCursor so position is correct even after focus leaves
   if (tokenSelect) {
     tokenSelect.addEventListener('change', () => {
       const token = tokenSelect.value;
       if (!token || !patternInput) { tokenSelect.value = ''; return; }
-      const start = patternInput.selectionStart ?? patternInput.value.length;
-      const end   = patternInput.selectionEnd   ?? start;
-      patternInput.value = patternInput.value.slice(0, start) + token + patternInput.value.slice(end);
-      patternInput.selectionStart = patternInput.selectionEnd = start + token.length;
+      const pos = savedCursor;
+      const val = patternInput.value;
+      patternInput.value = val.slice(0, pos) + token + val.slice(pos);
+      savedCursor = pos + token.length;
+      patternInput.selectionStart = patternInput.selectionEnd = savedCursor;
       patternInput.focus();
       state.template.pattern = patternInput.value;
       updatePreview();
       updateExcelZoneBadge();
       updateStartBtn();
       saveTemplate();
-      tokenSelect.value = ''; // reset dropdown to placeholder
+      tokenSelect.value = ''; // reset to placeholder
     });
   }
 
@@ -1498,6 +1697,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // Step 4 — done-page buttons
   document.getElementById('done-csv-btn').addEventListener('click', downloadCSV);
   document.getElementById('restart-btn').addEventListener('click', restart);
+
+  // Smart Scan button
+  document.getElementById('scan-btn').addEventListener('click', async () => {
+    if (!state.pdfFiles.length) return;
+    const btn   = document.getElementById('scan-btn');
+    const label = document.getElementById('scan-btn-label');
+    label.textContent = 'Scanning…';
+    btn.disabled = true;
+    try {
+      const sample  = state.pdfFiles[0]; // use first file as sample
+      const results = await scanSampleFile(sample.handle);
+      showScanResults(sample.name, results);
+    } catch (e) {
+      label.textContent = 'Scan failed — ' + e.message;
+    } finally {
+      label.textContent = 'Scan a file to discover content fields';
+      btn.disabled = false;
+    }
+  });
 
   // Step 3 — event delegation for dynamic table rows (checkboxes + dropdowns)
   document.getElementById('results-tbody').addEventListener('change', e => {
