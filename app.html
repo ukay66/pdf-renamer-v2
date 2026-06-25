@@ -633,9 +633,25 @@
 <!-- STEP 3 — Review -->
 <!-- ════════════════════════════════════════════ -->
 <div class="main hidden" id="step-3">
+
+  <!-- ── Active template banner ── -->
+  <div style="background:white;border:1px solid var(--gray-200);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--gray-400);margin-bottom:4px;">Active Renaming Template</div>
+      <div style="font-size:14px;font-family:monospace;font-weight:600;color:var(--gray-800);" id="review-template-display">—</div>
+      <div id="review-unknown-hint" class="hidden" style="margin-top:5px;font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:5px 10px;display:inline-block;">
+        ⚠ Some IDs show UNKNOWN — upload a Name &amp; ID file in Setup for better results
+      </div>
+    </div>
+    <button id="back-to-setup-btn" style="padding:8px 16px;background:white;color:var(--gray-600);border:1px solid var(--gray-300);border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;transition:all 0.15s;">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+      Back to Setup
+    </button>
+  </div>
+
   <div class="card">
-    <div class="card-title">Review Matches</div>
-    <div class="card-sub">Verify each match before renaming. Use dropdowns to manually assign any unmatched files.</div>
+    <div class="card-title">Review &amp; Rename</div>
+    <div class="card-sub">Check each file's extracted data and new filename. Adjust as needed before applying.</div>
 
     <div class="table-controls">
       <div class="summary-pills" id="summary-pills"></div>

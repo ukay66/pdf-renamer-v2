@@ -722,7 +722,25 @@ function buildResultsTable() {
   const tbody = document.getElementById('results-tbody');
   tbody.innerHTML = '';
 
-  const noRef = state.students.length === 0; // no reference file loaded
+  const noRef = state.students.length === 0;
+
+  // ── Populate template banner ──
+  const { slots, separator, fixedText } = state.template;
+  const LABELS = { Name: 'Name', ID: 'ID', FixedTemplate: fixedText.trim() || 'Fixed Text' };
+  const activeSlots = slots.filter(Boolean);
+  const templateDisplay = document.getElementById('review-template-display');
+  if (templateDisplay) {
+    templateDisplay.textContent = activeSlots.length > 0
+      ? activeSlots.map(s => LABELS[s]).join(` ${separator} `) + '.pdf'
+      : '— no template set —';
+  }
+
+  // Show UNKNOWN hint if any filenames contain UNKNOWN and no reference file
+  const hasUnknown = state.results.some(r => r.newName && r.newName.includes('UNKNOWN'));
+  const unknownHint = document.getElementById('review-unknown-hint');
+  if (unknownHint) {
+    unknownHint.classList.toggle('hidden', !hasUnknown);
+  }
 
   // Update table column headers for no-reference mode
   const thead = document.querySelector('#results-table thead tr');
@@ -988,6 +1006,21 @@ function downloadCSV() {
   URL.revokeObjectURL(url);
 };
 
+// Re-apply the current template to existing OCR results — no re-scan needed
+function reapplyTemplate() {
+  if (state.results.length === 0) return;
+  state.results.forEach(r => {
+    r.newName = buildFilenameFromTemplate(r.parsed, r.match?.student);
+    r.selected = true;
+  });
+  buildResultsTable();
+  showStep(3);
+  // Restore the normal start button for future use
+  const btn = document.getElementById('start-btn');
+  btn.textContent = 'Start OCR Processing';
+  btn.onclick = null; // DOMContentLoaded listener still handles it via addEventListener
+}
+
 // ─────────────────────────────────────────────────────────────
 // RESTART
 // ─────────────────────────────────────────────────────────────
@@ -1147,6 +1180,18 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('zone-pdf').addEventListener('click', pickFolder);
   document.getElementById('zone-excel').addEventListener('click', pickExcel);
   document.getElementById('start-btn').addEventListener('click', startProcessing);
+
+  // Step 3 — back to setup (preserves loaded files and OCR results)
+  document.getElementById('back-to-setup-btn').addEventListener('click', () => {
+    showStep(1);
+    // If we already have OCR results, add a quick "Re-apply template" button
+    if (state.results.length > 0) {
+      const btn = document.getElementById('start-btn');
+      btn.disabled = false;
+      btn.textContent = '↺ Re-apply Template (no re-scan)';
+      btn.onclick = reapplyTemplate;
+    }
+  });
 
   // Step 3 — select-all checkbox
   document.getElementById('select-all').addEventListener('change', e => toggleAll(e.target.checked));
