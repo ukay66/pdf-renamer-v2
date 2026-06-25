@@ -660,14 +660,25 @@ function fileExtension(filename) {
 
 function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalName = '') {
   const { slots, separator, fixedTexts } = state.template;
-  const ext   = fileExtension(originalName) || '.pdf';
-  const parts = [];
+  const ext       = fileExtension(originalName) || '.pdf';
+  const hasRoster = state.students.length > 0;
+  const parts     = [];
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (!slot) continue;
-    if (slot === 'Name')               parts.push(student?.name || parsed?.learnerName || filenameHint || 'UNKNOWN');
-    else if (slot === 'ID')            parts.push(student?.atsId || parsed?.atsId || 'UNKNOWN');
-    else if (slot === 'FixedTemplate') parts.push((fixedTexts[i] || '').trim() || 'FIXED');
+    if (slot === 'Name') {
+      // Roster loaded → use authoritative roster name only (no OCR fallback)
+      // No roster   → best-effort from OCR / filename
+      parts.push(hasRoster
+        ? (student?.name || 'UNKNOWN')
+        : (parsed?.learnerName || filenameHint || 'UNKNOWN'));
+    } else if (slot === 'ID') {
+      parts.push(hasRoster
+        ? (student?.atsId || 'UNKNOWN')
+        : (parsed?.atsId || 'UNKNOWN'));
+    } else if (slot === 'FixedTemplate') {
+      parts.push((fixedTexts[i] || '').trim() || 'FIXED');
+    }
   }
   if (parts.length === 0) return 'UNKNOWN' + ext;
   return parts.join(separator) + ext;
