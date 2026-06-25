@@ -305,14 +305,27 @@ async function ocrFirstPage(fileHandle) {
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
   const page = await pdf.getPage(1);
 
-  // 3× scale ≈ 216 DPI effective — higher scale improves small-text OCR
-  const viewport = page.getViewport({ scale: 3.0 });
+  // 4× scale ≈ 288 DPI — needed to read text in grey-shaded table cells
+  const viewport = page.getViewport({ scale: 4.0 });
   const canvas = document.createElement('canvas');
-  canvas.width = viewport.width;
+  canvas.width  = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d');
   await page.render({ canvasContext: ctx, viewport }).promise;
   await pdf.destroy();
+
+  // ── Image preprocessing for grey-background label cells ──────
+  // "Learner Name", "ATS ID" etc. are printed on grey shaded cells.
+  // Tesseract misses them at normal contrast. Convert to greyscale
+  // and binarise with threshold 160: light grey → white, text → black.
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const grey = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const bw = grey > 160 ? 255 : 0;          // binarise
+    d[i] = d[i + 1] = d[i + 2] = bw;         // set R=G=B; leave alpha
+  }
+  ctx.putImageData(imgData, 0, 0);
 
   const { data: { text } } = await state.tesseractWorker.recognize(canvas);
   return text;
