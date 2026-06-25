@@ -1233,8 +1233,8 @@ async function applyRenaming() {
       return;
     }
 
-    const ts  = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
-    const outDir = await state.dirHandle.getDirectoryHandle(`Renamed_${ts}`, { create: true });
+    const folderName = `${state.dirHandle.name}_renamed`;
+    const outDir = await state.dirHandle.getDirectoryHandle(folderName, { create: true });
     state.finalReport = [];
     let done = 0, errors = 0;
 
@@ -1260,7 +1260,7 @@ async function applyRenaming() {
     });
 
     // Show done step
-    const folderName = `Renamed_${ts}`;
+
     document.getElementById('done-title').textContent = `${done} file${done !== 1 ? 's' : ''} renamed!`;
     document.getElementById('done-sub').textContent = `Renamed copies saved to subfolder "${folderName}" inside your selected folder.`;
     document.getElementById('done-stats').innerHTML = `
