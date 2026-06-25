@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Assignment Renamer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+    }
+    .header {
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      padding: 20px 16px 16px;
+      color: white;
+    }
+    .header h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.01em; }
+    .header p { font-size: 11px; opacity: 0.85; margin-top: 3px; }
+    .body { padding: 16px; }
+    .launch-btn {
+      width: 100%;
+      padding: 12px;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+    .launch-btn:hover { background: #2563eb; }
+    .launch-btn svg { flex-shrink: 0; }
+    .hint {
+      margin-top: 10px;
+      font-size: 10px;
+      color: #64748b;
+      text-align: center;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>PDF Assignment Renamer</h1>
+    <p>OCR · Match · Rename</p>
+  </div>
+  <div class="body">
+    <button class="launch-btn" id="openApp">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14,2 14,8 20,8"/>
+      </svg>
+      Open Renamer
+    </button>
+    <p class="hint">Opens in a full tab for OCR processing.<br>Requires internet the first time (language model).</p>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
