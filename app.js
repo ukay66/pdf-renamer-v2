@@ -415,55 +415,97 @@ function parseOcrText(text) {
     criteriaType: '', criteriaStart: '', criteriaEnd: '',
   };
 
-  // ── Name: try labels in priority order ──────────────────────
-  // More specific labels first; generic "Name" last as fallback.
+  // ── Name extraction ──────────────────────────────────────────
+  // The OCR reads the form table in a specific pattern:
+  //   Line A: "Learner Name  Course Code | ENE61"   (labels row)
+  //   Line B: "[garbled] | Alhanoo Nasser Alnebsl  Course Code |"  (values row)
+  //
+  // Strategy 1: Look on the value row — the name is between the first `|`
+  //             and a trailing label keyword like "Course Code" or "Subject".
+  //
+  // Strategy 2: Standard label-then-value patterns (same-line / next-line).
+  //
+  // Strategy 3: Any pipe-separated token near "Learner Name" that looks like a name.
+
   const NAME_LABELS = [
-    'Learner\\s+Name',
-    'Student\\s+Name',
-    'Staff\\s+Name',
-    'Employee\\s+Name',
-    'Full\\s+Name',
-    'Your\\s+Name',
-    'Candidate\\s+Name',
-    'Trainee\\s+Name',
-    // Generic: any single word before "Name" that isn't a bad prefix
+    'Learner\\s*Name',
+    'Student\\s*Name',
+    'Staff\\s*Name',
+    'Employee\\s*Name',
+    'Full\\s*Name',
+    'Your\\s*Name',
+    'Candidate\\s*Name',
+    'Trainee\\s*Name',
     '(?!Course|Assessment|Subject|Unit|Program|Task|Module|Outcome|Criteria|Milestone)\\w+\\s+Name',
-    // Last resort: standalone "Name" label
     'Name',
   ];
 
+  // Strategy 1 — value row after label row:
+  // "Learner Name [anything on same line]\n[junk]| NAME Course Code"
   for (const label of NAME_LABELS) {
-    const found = extractAfterLabel(text, label);
-    if (!found) continue;
-    result.rawLearnerName = found.raw;
-    // Reject if the extracted value itself looks like a form label
-    if (!FORM_LABEL_RE.test(found.value)) {
-      result.learnerName = found.value;
-      break;
+    const re = new RegExp(
+      `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z][^|\\n]{2,60}?)\\s*(?:Course|Subject|ATS|\\|\\s*\\n|$)`,
+      'i'
+    );
+    const m = text.match(re);
+    if (m) {
+      const candidate = m[1].trim();
+      result.rawLearnerName = candidate;
+      if (candidate.length >= 3 && !FORM_LABEL_RE.test(candidate)) {
+        result.learnerName = candidate;
+        break;
+      }
     }
-    // Otherwise keep rawLearnerName for debug but continue searching
-  }
-  if (!result.rawLearnerName) {
-    result.rawLearnerName = '(no name label found in OCR text)';
   }
 
-  // ── ID: try labels in priority order ────────────────────────
+  // Strategy 2 — standard same-line / next-line if strategy 1 found nothing
+  if (!result.learnerName) {
+    for (const label of NAME_LABELS) {
+      const found = extractAfterLabel(text, label);
+      if (!found) continue;
+      if (!result.rawLearnerName) result.rawLearnerName = found.raw;
+      if (!FORM_LABEL_RE.test(found.value)) {
+        result.learnerName = found.value;
+        break;
+      }
+    }
+  }
+
+  if (!result.rawLearnerName) result.rawLearnerName = '(no name label found in OCR text)';
+
+  // ── ID extraction ─────────────────────────────────────────────
+  // Same table pattern: ID is after the first `|` on the ATS ID value row.
+  // Also try standard label-then-value patterns.
   const ID_LABELS = [
-    'ATS\\s+(?:ID|No\\.?)',
-    'Student\\s+(?:ID|No\\.?)',
-    'Staff\\s+(?:ID|No\\.?)',
-    'Employee\\s+(?:ID|No\\.?)',
-    'Trainee\\s+(?:ID|No\\.?)',
-    'Learner\\s+(?:ID|No\\.?)',
-    'ID\\s*(?:No\\.?|Number)',
-    'Emirates\\s+ID',
-    'Ref(?:erence)?\\s*(?:ID|No\\.?)',
-    '(?<!Course\\s)(?<!Staff\\s)ID',  // standalone ID not preceded by Course/Staff
+    'ATS\\s*ID', 'ASI', 'AST\\s*ID',          // "ATS ID" + common OCR garbles
+    'Student\\s*(?:ID|No)',
+    'Staff\\s*(?:ID|No)',
+    'Employee\\s*(?:ID|No)',
+    'Trainee\\s*(?:ID|No)',
+    'Learner\\s*(?:ID|No)',
+    'Emirates\\s*ID',
+    'ID\\s*(?:No|Number)',
   ];
 
+  // Strategy 1: value row after ID label row
   for (const label of ID_LABELS) {
-    const found = extractIdAfterLabel(text, label);
-    if (found) { result.atsId = found; break; }
+    const re = new RegExp(
+      `\\b${label}[^\\n]*\\n[^|\\n]*\\|\\s*([A-Za-z0-9][^|\\n]{1,30}?)(?:\\s*\\|[^\\n]|\\s*\\n|$)`,
+      'i'
+    );
+    const m = text.match(re);
+    if (m) {
+      const digits = m[1].replace(/\D/g, '');
+      if (digits.length >= 4) { result.atsId = digits; break; }
+    }
+  }
+
+  // Strategy 2: standard inline / next-line label scan
+  if (!result.atsId) {
+    for (const label of ID_LABELS) {
+      const found = extractIdAfterLabel(text, label);
+      if (found) { result.atsId = found; break; }
+    }
   }
 
   // ── Course Code ── e.g. ENE61, EEE61, ETE61
