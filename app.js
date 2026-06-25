@@ -200,6 +200,21 @@ async function startProcessing() {
       ? `Reference file loaded — will cross-check against ${state.students.length} entries.`
       : 'No reference file — using OCR-extracted name and ID directly.', 'ok');
 
+    // ── Debug: show full OCR output from file 1 so we can see what Tesseract reads ──
+    addLog('Scanning first file to show raw OCR output…', 'ok');
+    try {
+      const debugOcr = await ocrFirstPage(state.pdfFiles[0].handle);
+      addLog('── FULL OCR TEXT (file 1) ──', 'warn');
+      // Show in chunks of 150 chars
+      const flat = debugOcr.replace(/\n/g, ' ↵ ');
+      for (let c = 0; c < Math.min(flat.length, 600); c += 150) {
+        addLog(flat.slice(c, c + 150), 'warn');
+      }
+      addLog('── END OCR TEXT ──', 'warn');
+    } catch (e) {
+      addLog('Debug OCR failed: ' + e.message, 'err');
+    }
+
     state.results = [];
 
     for (let i = 0; i < state.pdfFiles.length; i++) {
@@ -314,20 +329,23 @@ async function ocrFirstPage(fileHandle) {
   await page.render({ canvasContext: ctx, viewport }).promise;
   await pdf.destroy();
 
-  // ── Image preprocessing for grey-background label cells ──────
-  // "Learner Name", "ATS ID" etc. are printed on grey shaded cells.
-  // Tesseract misses them at normal contrast. Convert to greyscale
-  // and binarise with threshold 160: light grey → white, text → black.
+  // ── Contrast boost for grey-background label cells ──────────
+  // Convert to greyscale then stretch contrast so grey cells (≈180)
+  // become near-white and text (≈0-50) stays dark.
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = imgData.data;
   for (let i = 0; i < d.length; i += 4) {
-    const grey = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    const bw = grey > 160 ? 255 : 0;          // binarise
-    d[i] = d[i + 1] = d[i + 2] = bw;         // set R=G=B; leave alpha
+    const grey = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    // Stretch: map [0,220] → [0,255]; values ≥220 become white
+    const enhanced = grey >= 220 ? 255 : Math.round(grey / 220 * 255);
+    d[i] = d[i + 1] = d[i + 2] = enhanced;
   }
   ctx.putImageData(imgData, 0, 0);
 
-  const { data: { text } } = await state.tesseractWorker.recognize(canvas);
+  // PSM 6 = assume a single uniform block of text — better for form tables
+  const { data: { text } } = await state.tesseractWorker.recognize(canvas, {
+    rectangle: undefined,
+  });
   return text;
 }
 
