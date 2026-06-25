@@ -481,19 +481,25 @@ function parseOcrText(text) {
     }
   }
 
-  // Strategy C: fuzzy — scan first 20 lines for a multi-word alphabetic name
+  // Strategy C: fuzzy — scan pipe-separated tokens AFTER the first table row
+  // (skip the header logo/address which appears before any | character)
   if (!result.learnerName) {
-    const earlyLines = text.split('\n').slice(0, 20);
-    for (const line of earlyLines) {
-      // Split by pipe/tab and look for name-like tokens
+    const lines = text.split('\n');
+    // Find where the table starts — first line containing a pipe character
+    const tableStart = lines.findIndex(l => l.includes('|'));
+    // Scan from the table start (skip the school header above it)
+    const tableLines = tableStart >= 0 ? lines.slice(tableStart, tableStart + 15) : lines.slice(8, 25);
+
+    for (const line of tableLines) {
       const tokens = line.split(/[|\t]/).map(t => t.trim());
       for (const token of tokens) {
         const clean = token.replace(/\s{2,}/g, ' ').trim();
+        // Must be 2–5 alphabetic words, not a form label or trailing label
+        const wordCount = clean.split(/\s+/).length;
         if (ALPHA_NAME_RE.test(clean)
           && !FORM_LABEL_RE.test(clean)
           && !TRAILING_LABELS.test(clean)
-          && clean.split(' ').length >= 2      // at least two words
-          && clean.split(' ').length <= 6) {   // not a sentence
+          && wordCount >= 2 && wordCount <= 5) {
           result.rawLearnerName = result.rawLearnerName || clean;
           result.learnerName = clean;
           break;
