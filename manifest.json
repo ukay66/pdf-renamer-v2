@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "FileRenamer",
-  "version": "1.1.0",
-  "description": "OCR-powered batch file renamer for PDFs, images, Word, Excel and more — matches names to a roster and applies configurable naming templates.",
+  "name": "Smart File Renamer",
+  "short_name": "File Renamer",
+  "version": "1.1.1",
+  "description": "Batch rename any file type by matching filenames to a roster. Custom naming templates. Instant — no OCR or internet needed.",
   "permissions": ["tabs"],
   "host_permissions": [],
   "action": {

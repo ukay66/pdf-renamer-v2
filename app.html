@@ -375,6 +375,22 @@
     .csv-btn:hover { background: var(--gray-50); }
     .csv-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+    .cancel-btn {
+      padding: 11px 20px;
+      background: white;
+      color: #b91c1c;
+      border: 1px solid #fecaca;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+    .cancel-btn:hover { background: #fef2f2; }
+
     /* ── Step 4: Complete ── */
     .complete-box {
       text-align: center;
@@ -529,7 +545,7 @@
     <!-- Pattern input -->
     <div style="margin-bottom:12px;">
       <input type="text" id="template-pattern"
-        placeholder="e.g.  ENE61_GC5.1_5.3_P_{id}.{ext}  or  {name}_{id}.{ext}"
+        placeholder="e.g.  ENE61_GC5.1_5.3_P_{id}  or  {name}_{id}"
         style="width:100%;padding:11px 14px;border:1.5px solid var(--gray-300);border-radius:9px;
                font-size:14px;font-family:monospace;color:var(--gray-800);outline:none;
                transition:border-color 0.15s;">
@@ -542,20 +558,29 @@
         style="padding:7px 12px;border:1.5px solid var(--gray-300);border-radius:8px;
                font-size:13px;color:var(--gray-700);background:white;cursor:pointer;
                min-width:320px;outline:none;">
-        <option value="">— Select a token to insert —</option>
-        <option value="{name}">  {name}      — Matched name from the roster file</option>
-        <option value="{id}">    {id}        — Matched ID number from the roster file</option>
-        <option value="{ext}">   {ext}       — Original file extension (pdf, docx, jpg…)</option>
-        <option value="{date}">     {date}     — Today's date in YYYY-MM-DD format</option>
-        <option value="{year}">     {year}     — Current year (e.g. 2026)</option>
-        <option value="{month}">    {month}    — Current month number (e.g. 06)</option>
-        <option value="{day}">      {day}      — Current day number (e.g. 25)</option>
-        <option value="{filename}"> {filename} — Original filename without its extension</option>
-        <option value="{count}">    {count}    — Auto-incremental file counter: 001, 002, 003…</option>
-        <option value="{created}">  {created}  — File creation date from PDF metadata (YYYY-MM-DD)</option>
-        <option value="{modified}"> {modified} — File last-modified date (YYYY-MM-DD)</option>
-        <option value="{title}">    {title}    — Document title from PDF metadata (if available)</option>
-        <option value="{author}">   {author}   — Document author from PDF metadata (if available)</option>
+        <option value="" selected>Choose a token to insert...</option>
+        <option value="" disabled>── From roster (requires Name &amp; ID file) ──</option>
+        <option value="{name}">    {name}     — Person's full name, matched from your roster</option>
+        <option value="{id}">      {id}       — ID number, matched from your roster</option>
+
+        <option value="" disabled>── From the filename itself (always available) ──</option>
+        <option value="{filename}">{filename} — Current filename without extension  e.g. Milestone 1 - Aysha</option>
+        <option value="{ext}">     {ext}      — Optional custom file type placement  e.g. pdf  docx  jpg</option>
+        <option value="{count}">   {count}    — Auto-count for each file in the batch  001  002  003</option>
+
+        <option value="" disabled>── Today's date (always available) ──</option>
+        <option value="{date}">    {date}     — Full date  e.g. 2026-06-26</option>
+        <option value="{year}">    {year}     — Year only  e.g. 2026</option>
+        <option value="{month}">   {month}    — Month number  e.g. 06</option>
+        <option value="{day}">     {day}      — Day number  e.g. 26</option>
+
+        <option value="" disabled>── From inside the PDF file (PDFs only, often empty in scanned files) ──</option>
+        <option value="{created}"> {created}  — Date the PDF was first created  e.g. 2026-03-15</option>
+        <option value="{modified}">{modified} — Date the file was last saved</option>
+        <option value="{title}">   {title}    — Title typed when the document was saved (usually empty)</option>
+        <option value="{author}">  {author}   — Author name saved in the document (usually empty)</option>
+        <option value="{subject}"> {subject}  — Subject saved in the document (usually empty)</option>
+        <option value="{keywords}">{keywords} — Keywords saved in the document (usually empty)</option>
       </select>
     </div>
 
@@ -574,7 +599,7 @@
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <span id="scan-btn-label">Scan text content in a file (OCR)</span>
+        <span id="scan-btn-label">Scan first-page text in a file (OCR)</span>
       </button>
 
       <!-- Results panel — hidden until scan runs -->
@@ -687,6 +712,13 @@
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
         Download Report CSV
+      </button>
+      <button class="cancel-btn" id="cancel-btn">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+        Cancel
       </button>
     </div>
   </div>

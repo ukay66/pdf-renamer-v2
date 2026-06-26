@@ -9,7 +9,7 @@ let pdfjsLib = null;
 async function initPdfJs() {
   if (pdfjsLib) return;
   pdfjsLib = await import('./lib/pdf.min.js');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.js');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ const state = {
   results: [],            // one entry per file after OCR
   tesseractWorker: null,
   template: {             // renaming template configured by user in Step 1
-    pattern: '',          // e.g. "ENE61_GC5.1_5.3_P_{id}.{ext}"
+    pattern: '',          // e.g. "ENE61_GC5.1_5.3_P_{id}" — extension is appended automatically
   },
   customTokens: {},       // tokens discovered by "Scan a file" e.g. { title: 'Milestone 1' }
   finalReport: [],
@@ -64,6 +64,7 @@ async function pickFolder() {
     const tag = zone.querySelector('.status-tag');
     tag.textContent = `${state.pdfFiles.length} files`;
     tag.classList.remove('hidden');
+    discoverFieldsFromLoadedFiles();
     updateStartBtn();
     // Reveal the "Scan a file" button now that we have files
     document.getElementById('scan-section')?.classList.remove('hidden');
@@ -665,9 +666,97 @@ function extractNameFromFilename(filename) {
   return m ? m[1].trim().replace(/\s+/g, ' ') : '';
 }
 
+function parseFilenameMetadata(filename) {
+  const stem = (filename || '').replace(/\.[^.]+$/, '').trim();
+  const ext = fileExtension(filename).replace(/^\./, '');
+  const parts = stem.split(/\s+[-–]\s+/).map(p => p.trim()).filter(Boolean);
+  const assignment = parts.length >= 2 ? parts.slice(0, -1).join(' - ') : '';
+  const filenameName = parts.length >= 2 ? parts[parts.length - 1].replace(/\s+/g, ' ') : '';
+  const nameParts = filenameName.split(/\s+/).filter(Boolean);
+  const assignmentMatch = assignment.match(/^([A-Za-z][A-Za-z\s]*?)\s+([A-Za-z]?\d+(?:\.\d+)*)\b/i);
+
+  return {
+    filename: stem,
+    ext,
+    assignment,
+    documentType: assignmentMatch ? assignmentMatch[1].trim().replace(/\s+/g, ' ') : '',
+    assignmentNo: assignmentMatch ? assignmentMatch[2] : '',
+    filenameName,
+    firstName: nameParts[0] || '',
+    lastName: nameParts.length > 1 ? nameParts[nameParts.length - 1] : '',
+  };
+}
+
 function fileExtension(filename) {
   const m = (filename || '').match(/(\.[^.]+)$/);
   return m ? m[1].toLowerCase() : '';
+}
+
+function replaceExtensionToken(pattern, extWithDot) {
+  return String(pattern || '').replace(/\.?\{ext\}/gi, extWithDot);
+}
+
+function addTokenOption(groupLabel, tokenKey, sampleLabel) {
+  const sel = document.getElementById('token-insert-select');
+  if (!sel || sel.querySelector(`option[value="{${tokenKey}}"]`)) return;
+
+  let grp = sel.querySelector(`optgroup[label="${groupLabel}"]`);
+  if (!grp) {
+    grp = document.createElement('optgroup');
+    grp.label = groupLabel;
+    sel.appendChild(grp);
+  }
+
+  const opt = document.createElement('option');
+  opt.value = `{${tokenKey}}`;
+  opt.textContent = `{${tokenKey}} — ${sampleLabel}`;
+  grp.appendChild(opt);
+}
+
+async function discoverFieldsFromLoadedFiles() {
+  const sample = state.pdfFiles.find(f => f?.name) || null;
+  if (!sample) return;
+
+  const meta = parseFilenameMetadata(sample.name);
+  const filenameTokens = [
+    ['assignment', meta.assignment, 'Assignment label from filename'],
+    ['documentType', meta.documentType, 'Document type from filename'],
+    ['assignmentNo', meta.assignmentNo, 'Assignment number from filename'],
+    ['filenameName', meta.filenameName, 'Person name written in filename'],
+    ['firstName', meta.firstName, 'First name written in filename'],
+    ['lastName', meta.lastName, 'Last name written in filename'],
+  ];
+
+  let discovered = 0;
+  filenameTokens.forEach(([token, value, fallback]) => {
+    if (!value) return;
+    addTokenOption('Auto-discovered from filenames', token, `${fallback}  e.g. ${value}`);
+    PREVIEW_SAMPLES[token] = value;
+    discovered++;
+  });
+
+  if (discovered > 0) updatePreview();
+
+  try {
+    const pdfMeta = await extractPdfMetadata(sample.handle);
+    const metadataTokens = [
+      ['created', pdfMeta.created, 'PDF creation date'],
+      ['title', pdfMeta.title, 'PDF document title'],
+      ['author', pdfMeta.author, 'PDF document author'],
+      ['subject', pdfMeta.subject, 'PDF document subject'],
+      ['keywords', pdfMeta.keywords, 'PDF document keywords'],
+    ];
+
+    let metadataDiscovered = 0;
+    metadataTokens.forEach(([token, value, fallback]) => {
+      if (!value) return;
+      addTokenOption('Auto-discovered PDF metadata', token, `${fallback}  e.g. ${value}`);
+      PREVIEW_SAMPLES[token] = value;
+      metadataDiscovered++;
+    });
+
+    if (metadataDiscovered > 0) updatePreview();
+  } catch (_) {}
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -780,14 +869,13 @@ function showScanResults(fileName, results) {
     container.appendChild(row);
   }
 
-  // PDF metadata is now extracted automatically per-file — show it here as info only
-  const metaNote = document.createElement('div');
-  metaNote.style.cssText = 'padding:8px 14px;font-size:11px;color:var(--gray-400);background:var(--gray-50);border-bottom:1px solid var(--gray-100);';
   const metaItems = Object.entries(pdfMeta).filter(([,v]) => v);
-  metaNote.textContent = metaItems.length
-    ? `ℹ️ PDF metadata auto-extracted: ${metaItems.map(([k,v])=>`{${k}}=${v}`).join(' · ')} — use {created}, {title} etc. in your pattern without scanning.`
-    : 'ℹ️ No PDF metadata found in this file. Metadata tokens ({created}, {title}) will be empty for this file.';
-  container.appendChild(metaNote);
+  if (metaItems.length) {
+    const metaNote = document.createElement('div');
+    metaNote.style.cssText = 'padding:8px 14px;font-size:11px;color:var(--gray-400);background:var(--gray-50);border-bottom:1px solid var(--gray-100);';
+    metaNote.textContent = `PDF metadata is auto-extracted on folder load: ${metaItems.map(([k,v])=>`{${k}}=${v}`).join(' · ')}.`;
+    container.appendChild(metaNote);
+  }
 
   // OCR-extracted text fields
   const ocrFields = [
@@ -873,14 +961,30 @@ function buildFilenameFromTemplate(parsed, student, filenameHint = '', originalN
     title:    fileMeta.title    || '',
     author:   fileMeta.author   || '',
     subject:  fileMeta.subject  || '',
+    keywords: fileMeta.keywords || '',
   };
+
+  const filenameMeta = parseFilenameMetadata(originalName);
+  Object.assign(values, {
+    assignment:   filenameMeta.assignment,
+    documentType: filenameMeta.documentType,
+    assignmentNo: filenameMeta.assignmentNo,
+    filenameName: filenameMeta.filenameName,
+    firstName:    filenameMeta.firstName,
+    lastName:     filenameMeta.lastName,
+  });
 
   // Merge with OCR-discovered custom tokens (from Scan button)
   const allValues = { ...values, ...state.customTokens };
 
   let result = (state.template.pattern || '').trim();
+  const templateIncludesExt = /\{(?:ext|filetype)\}/i.test(result);
+  result = replaceExtensionToken(result, extWithDot);
   for (const [token, value] of Object.entries(allValues)) {
     result = result.replace(new RegExp(`\\{${token}\\}`, 'gi'), String(value));
+  }
+  if (result && !templateIncludesExt && !result.toLowerCase().endsWith(extWithDot.toLowerCase())) {
+    result += extWithDot;
   }
   return result || 'UNKNOWN' + extWithDot;
 }
@@ -1514,15 +1618,29 @@ function reapplyTemplate() {
   btn.onclick = null; // DOMContentLoaded listener still handles it via addEventListener
 }
 
+function cancelReview() {
+  state.results = [];
+  state.finalReport = [];
+  const tbody = document.getElementById('results-tbody');
+  if (tbody) tbody.innerHTML = '';
+  const log = document.getElementById('ocr-log');
+  if (log) log.innerHTML = '';
+  const applyLabel = document.getElementById('apply-label');
+  if (applyLabel) applyLabel.textContent = 'Apply Renaming';
+  showStep(1);
+  updateStartBtn();
+}
+
 // ─────────────────────────────────────────────────────────────
 // RESTART
 // ─────────────────────────────────────────────────────────────
 function restart() {
+  const restoredPattern = getSavedFixedTemplate();
   state.dirHandle  = null;
   state.pdfFiles   = [];
   state.students   = [];
   state.results    = [];
-  state.template      = { pattern: '' };
+  state.template      = { pattern: restoredPattern };
   state.customTokens  = {};
   state.finalReport = [];
 
@@ -1537,18 +1655,20 @@ function restart() {
   document.getElementById('zone-pdf').querySelector('h3').textContent = 'Folder with Files';
   document.getElementById('zone-pdf').querySelector('p').textContent = 'Click to select the folder containing all files to be renamed';
   document.getElementById('zone-excel').querySelector('h3').textContent = 'Name & ID File';
-  document.getElementById('zone-excel').querySelector('p').textContent = 'Upload a .xlsx/.csv with names and IDs to cross-check against file content';
+  document.getElementById('zone-excel').querySelector('p').textContent = 'Upload a .xlsx roster — required only when Name or ID slots are used';
   document.getElementById('ocr-log').innerHTML = '';
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Start Renaming`;
 
   // Reset template UI
   const patternEl = document.getElementById('template-pattern');
-  if (patternEl) patternEl.value = '';
+  if (patternEl) patternEl.value = restoredPattern;
   document.getElementById('scan-section')?.classList.add('hidden');
   document.getElementById('scan-results')?.classList.add('hidden');
   // Remove discovered optgroup from dropdown
   document.querySelector('#token-insert-select optgroup[label="Discovered from your files"]')?.remove();
+  document.querySelector('#token-insert-select optgroup[label="Auto-discovered from filenames"]')?.remove();
+  document.querySelector('#token-insert-select optgroup[label="Auto-discovered PDF metadata"]')?.remove();
   updatePreview();
   updateExcelZoneBadge();  // reset badge to Optional (slots are all null after restart)
   updateStartBtn();         // ensure start button is disabled until folder is re-selected
@@ -1581,8 +1701,10 @@ const PREVIEW_SAMPLES = {
   name: 'Aysha Abdulla', id: '571883', ext: 'pdf', filetype: 'pdf',
   date: '2026-06-26', year: '2026', month: '06', day: '26',
   filename: 'Milestone 1 - Aysha', count: '001', index: '001',
+  assignment: 'Milestone 1', documentType: 'Milestone', assignmentNo: '1',
+  filenameName: 'Aysha Alrashdi', firstName: 'Aysha', lastName: 'Alrashdi',
   created: '2026-03-15', modified: '2026-06-22',
-  title: 'Assignment Milestone 1', author: '', subject: '',
+  title: 'Assignment Milestone 1', author: '', subject: '', keywords: '',
 };
 
 function saveTemplate() {
@@ -1591,15 +1713,32 @@ function saveTemplate() {
   } catch (_) {}
 }
 
-function loadTemplate() {
+function fixedTemplatePrefix(pattern) {
+  return String(pattern || '')
+    .replace(/\{[^}]+\}/g, '')
+    .replace(/\.$/, '');
+}
+
+function getSavedFixedTemplate() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) return '';
     const t = JSON.parse(raw);
-    if (t.pattern) {
-      state.template.pattern = t.pattern;
+    return fixedTemplatePrefix(t.pattern);
+  } catch (_) {
+    return '';
+  }
+}
+
+function loadTemplate() {
+  try {
+    const restoredPattern = getSavedFixedTemplate();
+    if (restoredPattern) {
+      state.template.pattern = restoredPattern;
       const el = document.getElementById('template-pattern');
-      if (el) el.value = t.pattern;
+      if (el) el.value = restoredPattern;
+      updatePreview();
+      updateStartBtn();
     }
   } catch (_) {}
 }
@@ -1622,8 +1761,13 @@ function updatePreview() {
 
   // Substitute sample values to show an example filename
   let example = pattern;
+  const templateIncludesExt = /\{(?:ext|filetype)\}/i.test(example);
+  example = replaceExtensionToken(example, '.' + PREVIEW_SAMPLES.ext);
   for (const [k, v] of Object.entries(PREVIEW_SAMPLES)) {
     example = example.replace(new RegExp(`\\{${k}\\}`, 'gi'), v);
+  }
+  if (!templateIncludesExt && !example.toLowerCase().endsWith('.' + PREVIEW_SAMPLES.ext.toLowerCase())) {
+    example += '.' + PREVIEW_SAMPLES.ext;
   }
   previewEx.textContent = 'e.g.  ' + example;
 }
@@ -1634,7 +1778,7 @@ function initTemplateUI() {
 
   // Track cursor position — clicking the dropdown steals focus from the input,
   // resetting selectionStart. We capture it on blur so insertion stays at cursor.
-  let savedCursor = 0;
+  let savedCursor = null;
 
   if (patternInput) {
     patternInput.addEventListener('input', () => {
@@ -1662,10 +1806,14 @@ function initTemplateUI() {
   // Token insert dropdown — uses savedCursor so position is correct even after focus leaves
   if (tokenSelect) {
     tokenSelect.addEventListener('change', () => {
-      const token = tokenSelect.value;
+      let token = tokenSelect.value;
       if (!token || !patternInput) { tokenSelect.value = ''; return; }
-      const pos = savedCursor;
       const val = patternInput.value;
+      const rawPos = savedCursor ?? val.length;
+      const pos = Math.max(0, Math.min(rawPos, val.length));
+      if (token.toLowerCase() === '{ext}' && val[pos - 1] !== '.') {
+        token = '.' + token;
+      }
       patternInput.value = val.slice(0, pos) + token + val.slice(pos);
       savedCursor = pos + token.length;
       patternInput.selectionStart = patternInput.selectionEnd = savedCursor;
@@ -1714,6 +1862,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Step 3 — apply + CSV buttons
   document.getElementById('apply-btn').addEventListener('click', applyRenaming);
   document.getElementById('csv-btn').addEventListener('click', downloadCSV);
+  document.getElementById('cancel-btn').addEventListener('click', cancelReview);
 
   // Step 4 — done-page buttons
   document.getElementById('done-csv-btn').addEventListener('click', downloadCSV);
@@ -1733,7 +1882,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       label.textContent = 'Scan failed — ' + e.message;
     } finally {
-      label.textContent = 'Scan text content in a file (OCR)';
+      label.textContent = 'Scan first-page text in a file (OCR)';
       btn.disabled = false;
     }
   });

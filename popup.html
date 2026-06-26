@@ -3,64 +3,156 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PDF Assignment Renamer</title>
+  <title>Smart File Renamer</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --blue: #2563eb;
+      --blue-dark: #1d4ed8;
+      --ink: #172033;
+      --muted: #64748b;
+      --line: #d8e0ea;
+      --line-soft: #e7edf4;
+      --panel: #ffffff;
+      --soft: #f8fafc;
+    }
     body {
-      width: 280px;
+      width: 356px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f8fafc;
-      color: #1e293b;
+      background: var(--soft);
+      color: var(--ink);
     }
-    .header {
-      background: linear-gradient(135deg, #3b82f6, #6366f1);
-      padding: 20px 16px 16px;
+    .shell {
+      margin: 8px;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      background: var(--blue);
       color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      box-shadow: 0 8px 18px rgba(37, 99, 235, 0.2);
     }
-    .header h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.01em; }
-    .header p { font-size: 11px; opacity: 0.85; margin-top: 3px; }
-    .body { padding: 16px; }
+    .brand h1 {
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .brand p {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+    .body {
+      padding-top: 14px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .summary-item {
+      background: var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      padding: 9px 10px;
+      min-height: 48px;
+    }
+    .summary-item strong {
+      display: block;
+      font-size: 12px;
+      color: var(--ink);
+      line-height: 1.2;
+      margin-bottom: 3px;
+    }
+    .summary-item span {
+      display: block;
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
     .launch-btn {
       width: 100%;
-      padding: 12px;
-      background: #3b82f6;
+      padding: 12px 14px;
+      background: var(--blue);
       color: white;
       border: none;
       border-radius: 8px;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: background 0.15s;
+      transition: background 0.15s, transform 0.15s;
     }
-    .launch-btn:hover { background: #2563eb; }
+    .launch-btn:hover { background: var(--blue-dark); transform: translateY(-1px); }
     .launch-btn svg { flex-shrink: 0; }
     .hint {
-      margin-top: 10px;
-      font-size: 10px;
-      color: #64748b;
-      text-align: center;
-      line-height: 1.5;
+      margin-top: 12px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
     }
+    .hint strong { color: var(--ink); font-weight: 700; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>FileRenamer</h1>
-    <p>Match · Rename · Any File Type</p>
-  </div>
-  <div class="body">
-    <button class="launch-btn" id="openApp">
-      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-        <polyline points="14,2 14,8 20,8"/>
-      </svg>
-      Open FileRenamer
-    </button>
-    <p class="hint">Match filenames against your roster and rename instantly.<br>No internet or OCR required.</p>
+  <div class="shell">
+    <div class="brand">
+      <div class="mark">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <path d="M14 2v6h6"/>
+          <path d="M8 14h8"/>
+          <path d="M8 18h5"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Smart File Renamer</h1>
+        <p>Batch renaming with filename, roster, and PDF fields</p>
+      </div>
+    </div>
+    <div class="body">
+      <div class="summary">
+        <div class="summary-item">
+          <strong>Local workflow</strong>
+          <span>Files stay on this computer.</span>
+        </div>
+        <div class="summary-item">
+          <strong>Structured tokens</strong>
+          <span>Use names, IDs, dates, and metadata.</span>
+        </div>
+      </div>
+      <button class="launch-btn" id="openApp">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path d="M15 3h6v6"/>
+          <path d="M10 14 21 3"/>
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        </svg>
+        Open workspace
+      </button>
+      <p class="hint"><strong>Chrome will ask before saving renamed copies.</strong> That browser dialog is required for folder access and cannot be styled by the extension.</p>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>
