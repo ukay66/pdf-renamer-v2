@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Smart File Renamer",
   "short_name": "File Renamer",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Batch rename any file type by matching filenames to a roster. Custom naming templates. Instant — no OCR or internet needed.",
   "permissions": ["tabs"],
   "host_permissions": [],
