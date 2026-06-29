@@ -206,15 +206,44 @@ async function startProcessing() {
         Object.assign(fileMeta, pdfM); // created, title, author, subject
       } catch (_) {}
 
-      let match;
-      if (hasRoster && filenameHint) {
-        // Compare filename name against roster — no OCR needed
-        match = matchStudent('', filenameHint, '', state.students);
-      } else if (!filenameHint) {
-        match = { status: 'unreadable', student: null, confidence: 0, candidates: state.students.slice(0, 5) };
-      } else {
-        // No roster: use filename directly (for Fixed Template-only setups)
-        match = { status: 'extracted', student: null, confidence: 1, candidates: [] };
+      let match = null;
+
+      if (hasRoster) {
+        // Pass 1 — Roster-first: scan FULL filename for student first+last name tokens.
+        // Works regardless of filename prefix format:
+        //   "ENE61-T3-M1-M2-Milestone 1 - Aysha Alrashdi" → finds Aysha + Alrashdi ✓
+        //   "Milestone 1 - Aysha Alrashdi"               → same ✓
+        //   "BATCH_Aysha_Alrashdi_2026"                  → same ✓
+        const directHit = findStudentInFilename(pdf.name, state.students);
+        if (directHit) {
+          match = {
+            status:     directHit.score === 1.0 ? 'matched' : 'low-confidence',
+            student:    directHit.student,
+            confidence: directHit.score,
+            candidates: [],
+          };
+        }
+
+        // Pass 2 — Fallback: use extracted name hint + fuzzy matchStudent()
+        // Handles edge cases where first/last names weren't found directly
+        if (!match || match.status !== 'matched') {
+          const hintMatch = filenameHint
+            ? matchStudent('', filenameHint, '', state.students)
+            : null;
+          // Use whichever pass gave higher confidence
+          if (hintMatch && (!match || hintMatch.confidence > match.confidence)) {
+            match = hintMatch;
+          }
+        }
+      }
+
+      if (!match) {
+        if (!hasRoster) {
+          // No roster: template uses Fixed Template only
+          match = { status: 'extracted', student: null, confidence: 1, candidates: [] };
+        } else {
+          match = { status: 'unreadable', student: null, confidence: 0, candidates: state.students.slice(0, 5) };
+        }
       }
 
       const newName = buildFilenameFromTemplate(parsed, match.student, filenameHint, pdf.name, i + 1, fileMeta);
@@ -664,6 +693,44 @@ function extractNameFromFilename(filename) {
   // Strip any extension, then extract name after " - " separator
   const m = filename.replace(/\.[^.]+$/, '').match(/[-–]\s+(.+)$/);
   return m ? m[1].trim().replace(/\s+/g, ' ') : '';
+}
+
+// ─────────────────────────────────────────────────────────────
+// ROSTER-FIRST FILENAME SCAN
+// ─────────────────────────────────────────────────────────────
+// Tokenize the full filename and check which roster student's
+// first name AND last name appear as tokens — format-agnostic.
+// Works for any prefix: "ENE61-T3-M1-M2-Milestone 1 - Aysha Alrashdi"
+//                        "BATCH_2026_Aysha_Alrashdi"
+//                        "Milestone 1 - Aysha Alrashdi"
+function findStudentInFilename(filename, students) {
+  const base       = filename.replace(/\.[^.]+$/, '').toLowerCase();
+  const fileTokens = base.split(/[\s\-_.,;]+/).filter(t => t.length > 2);
+
+  let best = null, bestScore = 0;
+
+  for (const s of students) {
+    const first    = getFirstName(s.name).toLowerCase();
+    const last     = getLastName(s.name).toLowerCase();
+    const lastSkel = consonantSkeleton(last);
+
+    // First name: exact token match OR trigram similarity ≥ 0.75
+    const firstHit = first.length > 2 && fileTokens.some(t =>
+      t === first || trigramJaccard(t, first) >= 0.75);
+
+    // Last name: consonant skeleton match (handles Al Ketbi / Alketbi)
+    // OR trigram similarity ≥ 0.75
+    const lastHit = last.length > 2 && fileTokens.some(t =>
+      consonantSkeleton(t) === lastSkel || trigramJaccard(t, last) >= 0.75);
+
+    const score = (firstHit ? 0.5 : 0) + (lastHit ? 0.5 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = { student: s, score };
+    }
+  }
+
+  return bestScore >= 0.5 ? best : null;
 }
 
 function parseFilenameMetadata(filename) {
